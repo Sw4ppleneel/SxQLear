@@ -430,17 +430,57 @@ function ColumnRow({
               {profile.kind === 'numeric' && (
                 <>
                   <div className="my-1 border-t border-surface-border" />
+                  <p className="text-text-muted text-3xs font-semibold mb-1">Distribution</p>
                   <div className="flex justify-between text-text-muted">
                     <span>Min</span>
                     <span className="tabular-nums text-text-primary">{profile.min ?? '—'}</span>
+                  </div>
+                  <div className="flex justify-between text-text-muted">
+                    <span>P25</span>
+                    <span className="tabular-nums text-text-primary">{profile.p25 ?? '—'}</span>
+                  </div>
+                  <div className="flex justify-between text-text-muted">
+                    <span>Median</span>
+                    <span className="tabular-nums text-text-primary">{profile.median ?? '—'}</span>
+                  </div>
+                  <div className="flex justify-between text-text-muted">
+                    <span>Mean</span>
+                    <span className="tabular-nums text-text-primary">{profile.mean ?? '—'}</span>
+                  </div>
+                  <div className="flex justify-between text-text-muted">
+                    <span>P75</span>
+                    <span className="tabular-nums text-text-primary">{profile.p75 ?? '—'}</span>
                   </div>
                   <div className="flex justify-between text-text-muted">
                     <span>Max</span>
                     <span className="tabular-nums text-text-primary">{profile.max ?? '—'}</span>
                   </div>
                   <div className="flex justify-between text-text-muted">
-                    <span>Mean</span>
-                    <span className="tabular-nums text-text-primary">{profile.mean ?? '—'}</span>
+                    <span>Range</span>
+                    <span className="tabular-nums text-text-primary">{profile.range ?? '—'}</span>
+                  </div>
+                  <div className="flex justify-between text-text-muted">
+                    <span>IQR</span>
+                    <span className="tabular-nums text-text-primary">{profile.iqr ?? '—'}</span>
+                  </div>
+
+                  <div className="my-1 border-t border-surface-border" />
+                  <p className="text-text-muted text-3xs font-semibold mb-1">Statistics</p>
+                  <div className="flex justify-between text-text-muted">
+                    <span>Sum</span>
+                    <span className="tabular-nums text-text-primary">{profile.sum ?? '—'}</span>
+                  </div>
+                  <div className="flex justify-between text-text-muted">
+                    <span>Std Dev</span>
+                    <span className="tabular-nums text-text-primary">{profile.stddev ?? '—'}</span>
+                  </div>
+                  <div className="flex justify-between text-text-muted">
+                    <span>Variance</span>
+                    <span className="tabular-nums text-text-primary">{profile.variance ?? '—'}</span>
+                  </div>
+                  <div className="flex justify-between text-text-muted">
+                    <span>CV (%)</span>
+                    <span className="tabular-nums text-text-primary">{profile.cv ?? '—'}</span>
                   </div>
                 </>
               )}

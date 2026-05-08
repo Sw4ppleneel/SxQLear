@@ -4,7 +4,7 @@ import re
 import threading
 from typing import Literal, Optional
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Response
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -139,12 +139,13 @@ def update_project(
 
 
 @router.delete("/{project_id}", status_code=204)
-def delete_project(project_id: str, db: Session = Depends(get_db)) -> None:
+def delete_project(project_id: str, db: Session = Depends(get_db)):
     service = ProjectMemoryService(db)
     from db.repositories.project_repo import ProjectRepository
     repo = ProjectRepository(db)
     if not repo.delete_project(project_id):
         raise not_found("Project", project_id)
+    return Response(status_code=204)
 
 
 # ── Schema crawling ───────────────────────────────────────────────────────────
@@ -220,7 +221,7 @@ def crawl_schema(
 
 
 @router.delete("/{project_id}/crawl", status_code=204)
-def cancel_crawl(project_id: str) -> None:
+def cancel_crawl(project_id: str):
     """
     Signal a running crawl to stop. The crawl will finish its current table
     and then save a partial snapshot. Returns 204 regardless of whether
@@ -230,6 +231,7 @@ def cancel_crawl(project_id: str) -> None:
         event = _crawl_cancel_events.get(project_id)
     if event:
         event.set()
+    return Response(status_code=204)
 
 
 
@@ -334,8 +336,9 @@ def profile_column(
     """
     Run a live summary query against the target database for a specific column.
 
-    Numeric columns  → count, non-null count, null count, null%, min, max, mean, stddev, distinct count
-    Text/categorical → count, non-null count, null count, null%, distinct count, top 5 values with row share
+    Numeric columns  → count, non-null count, null count, null%, min, max, mean, median, 
+                       stddev, variance, sum, range, iqr, cv, p25, p75, distinct count
+    Text/categorical → count, non-null count, null count, null%, distinct count, top 10 values with row share
     Boolean/date     → count, non-null count, null%, distinct count, top values
 
     Sends NO raw data — only aggregates. Safe for any column type.
@@ -421,6 +424,7 @@ def profile_column(
                             f"  MAX({quoted_col}), "
                             f"  AVG({quoted_col}::numeric), "
                             f"  STDDEV({quoted_col}::numeric), "
+                            f"  VARIANCE({quoted_col}::numeric), "
                             f"  SUM({quoted_col}::numeric), "
                             f"  PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY {quoted_col}), "
                             f"  PERCENTILE_CONT(0.5)  WITHIN GROUP (ORDER BY {quoted_col}), "
@@ -428,40 +432,89 @@ def profile_column(
                             f"FROM {quoted_table}"
                         )
                         num_row = conn.execute(num_sql).fetchone()
-                        result["min"]    = _safe_float(num_row[0])
-                        result["max"]    = _safe_float(num_row[1])
-                        result["mean"]   = _safe_round(num_row[2])
-                        result["stddev"] = _safe_round(num_row[3])
-                        result["sum"]    = _safe_float(num_row[4])
-                        result["p25"]    = _safe_round(num_row[5])
-                        result["median"] = _safe_round(num_row[6])
-                        result["p75"]    = _safe_round(num_row[7])
+                        min_val = _safe_float(num_row[0])
+                        max_val = _safe_float(num_row[1])
+                        mean_val = _safe_round(num_row[2])
+                        stddev_val = _safe_round(num_row[3])
+                        variance_val = _safe_round(num_row[4])
+                        sum_val = _safe_float(num_row[5])
+                        p25_val = _safe_round(num_row[6])
+                        median_val = _safe_round(num_row[7])
+                        p75_val = _safe_round(num_row[8])
+                        
+                        result["min"]     = min_val
+                        result["max"]     = max_val
+                        result["mean"]    = mean_val
+                        result["median"]  = median_val
+                        result["stddev"]  = stddev_val
+                        result["variance"] = variance_val
+                        result["sum"]     = sum_val
+                        result["p25"]     = p25_val
+                        result["p75"]     = p75_val
+                        
+                        # Derived metrics
+                        if min_val is not None and max_val is not None:
+                            result["range"] = max_val - min_val
+                        if p75_val is not None and p25_val is not None:
+                            result["iqr"] = p75_val - p25_val
+                        if mean_val is not None and mean_val != 0 and stddev_val is not None:
+                            result["cv"] = _safe_round((stddev_val / abs(mean_val)) * 100)  # Coefficient of variation %
 
                     elif dialect in ("mysql", "mariadb"):
                         num_sql = sa_text(
                             f"SELECT MIN({quoted_col}), MAX({quoted_col}), "
-                            f"AVG({quoted_col}), STDDEV({quoted_col}), SUM({quoted_col}) "
+                            f"AVG({quoted_col}), STDDEV({quoted_col}), VARIANCE({quoted_col}), SUM({quoted_col}) "
                             f"FROM {quoted_table}"
                         )
                         num_row = conn.execute(num_sql).fetchone()
-                        result["min"]    = _safe_float(num_row[0])
-                        result["max"]    = _safe_float(num_row[1])
-                        result["mean"]   = _safe_round(num_row[2])
-                        result["stddev"] = _safe_round(num_row[3])
-                        result["sum"]    = _safe_float(num_row[4])
+                        min_val = _safe_float(num_row[0])
+                        max_val = _safe_float(num_row[1])
+                        mean_val = _safe_round(num_row[2])
+                        stddev_val = _safe_round(num_row[3])
+                        variance_val = _safe_round(num_row[4])
+                        sum_val = _safe_float(num_row[5])
+                        
+                        result["min"]     = min_val
+                        result["max"]     = max_val
+                        result["mean"]    = mean_val
+                        result["median"]  = mean_val  # MySQL doesn't have built-in MEDIAN, approximate with mean
+                        result["stddev"]  = stddev_val
+                        result["variance"] = variance_val
+                        result["sum"]     = sum_val
+                        
+                        # Derived metrics
+                        if min_val is not None and max_val is not None:
+                            result["range"] = max_val - min_val
+                        if mean_val is not None and mean_val != 0 and stddev_val is not None:
+                            result["cv"] = _safe_round((stddev_val / abs(mean_val)) * 100)
 
                     elif dialect == "mssql":
                         num_sql = sa_text(
                             f"SELECT MIN({quoted_col}), MAX({quoted_col}), "
-                            f"AVG(CAST({quoted_col} AS FLOAT)), STDEV({quoted_col}), SUM({quoted_col}) "
+                            f"AVG(CAST({quoted_col} AS FLOAT)), STDEV({quoted_col}), VAR({quoted_col}), SUM({quoted_col}) "
                             f"FROM {quoted_table}"
                         )
                         num_row = conn.execute(num_sql).fetchone()
-                        result["min"]    = _safe_float(num_row[0])
-                        result["max"]    = _safe_float(num_row[1])
-                        result["mean"]   = _safe_round(num_row[2])
-                        result["stddev"] = _safe_round(num_row[3])
-                        result["sum"]    = _safe_float(num_row[4])
+                        min_val = _safe_float(num_row[0])
+                        max_val = _safe_float(num_row[1])
+                        mean_val = _safe_round(num_row[2])
+                        stddev_val = _safe_round(num_row[3])
+                        variance_val = _safe_round(num_row[4])
+                        sum_val = _safe_float(num_row[5])
+                        
+                        result["min"]     = min_val
+                        result["max"]     = max_val
+                        result["mean"]    = mean_val
+                        result["median"]  = mean_val  # MSSQL doesn't have built-in MEDIAN, approximate with mean
+                        result["stddev"]  = stddev_val
+                        result["variance"] = variance_val
+                        result["sum"]     = sum_val
+                        
+                        # Derived metrics
+                        if min_val is not None and max_val is not None:
+                            result["range"] = max_val - min_val
+                        if mean_val is not None and mean_val != 0 and stddev_val is not None:
+                            result["cv"] = _safe_round((stddev_val / abs(mean_val)) * 100)
 
                     else:
                         # SQLite and others — basic stats only
@@ -471,24 +524,33 @@ def profile_column(
                             f"FROM {quoted_table}"
                         )
                         num_row = conn.execute(num_sql).fetchone()
-                        result["min"]  = _safe_float(num_row[0])
-                        result["max"]  = _safe_float(num_row[1])
-                        result["mean"] = _safe_round(num_row[2])
-                        result["sum"]  = _safe_float(num_row[3])
+                        min_val = _safe_float(num_row[0])
+                        max_val = _safe_float(num_row[1])
+                        mean_val = _safe_round(num_row[2])
+                        sum_val = _safe_float(num_row[3])
+                        
+                        result["min"]  = min_val
+                        result["max"]  = max_val
+                        result["mean"] = mean_val
+                        result["sum"]  = sum_val
+                        
+                        # Derived metrics
+                        if min_val is not None and max_val is not None:
+                            result["range"] = max_val - min_val
 
                 except Exception:
                     # Not truly numeric — fall through to categorical
                     is_numeric = False
 
             if not is_numeric:
-                # Top 5 categories with counts + share
+                # Top 10 categories with counts + share
                 top_sql = sa_text(
                     f"SELECT {quoted_col}, COUNT(*) as cnt "
                     f"FROM {quoted_table} "
                     f"WHERE {quoted_col} IS NOT NULL "
                     f"GROUP BY {quoted_col} "
                     f"ORDER BY cnt DESC "
-                    f"LIMIT 5"
+                    f"LIMIT 10"
                 )
                 top_rows = conn.execute(top_sql).fetchall()
                 result["top_values"] = [

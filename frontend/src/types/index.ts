@@ -116,6 +116,15 @@ export interface ColumnProfileResult {
   min?: number | null
   max?: number | null
   mean?: number | null
+  median?: number | null
+  stddev?: number | null
+  variance?: number | null
+  sum?: number | null
+  range?: number | null
+  iqr?: number | null  // Inter-quartile range
+  cv?: number | null   // Coefficient of variation (%)
+  p25?: number | null  // 25th percentile
+  p75?: number | null  // 75th percentile
   // categorical only
   top_values?: ColumnTopValue[]
 }
