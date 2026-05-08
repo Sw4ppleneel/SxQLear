@@ -132,3 +132,12 @@ The system works fully without LLM keys. LLM reasoning is a supplementary layer 
 ## Project Status
 
 Early development (MVP). Core inference engine, schema crawling, and validation flows are functional.
+
+---
+
+## Contributors
+
+| GitHub | Role |
+|--------|------|
+| [@Sw4ppleneel](https://github.com/Sw4ppleneel) | Creator |
+| [@ReservedSnow673](https://github.com/ReservedSnow673) | Core contributor |
