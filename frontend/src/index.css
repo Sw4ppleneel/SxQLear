@@ -1,0 +1,44 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * {
+    box-sizing: border-box;
+  }
+
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: #2a2a2a;
+    border-radius: 3px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: #3a3a3a;
+  }
+}
+
+@layer utilities {
+  .text-2xs {
+    font-size: 0.65rem;
+    line-height: 1rem;
+  }
+}
+
+/* React Flow dark mode overrides */
+.react-flow__controls {
+  box-shadow: none !important;
+}
+.react-flow__controls-button {
+  background: #1a1a1a !important;
+  border-color: #2a2a2a !important;
+  fill: #888 !important;
+}
+.react-flow__controls-button:hover {
+  background: #2d2d2d !important;
+}
