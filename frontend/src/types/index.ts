@@ -93,6 +93,33 @@ export interface TermSearchResult {
   matches: ColumnMatch[]
 }
 
+// ─── Column Profile ───────────────────────────────────────────────────────────
+
+export interface ColumnTopValue {
+  value: string
+  count: number
+  share_pct: number
+}
+
+export interface ColumnProfileResult {
+  table: string
+  column: string
+  raw_type: string
+  normalized_type: string
+  kind: 'numeric' | 'categorical'
+  total_rows: number
+  non_null_count: number
+  null_count: number
+  null_pct: number
+  distinct_count: number
+  // numeric only
+  min?: number | null
+  max?: number | null
+  mean?: number | null
+  // categorical only
+  top_values?: ColumnTopValue[]
+}
+
 // ─── Manual & LLM Relationships ──────────────────────────────────────────────
 
 export interface ManualRelationshipRequest {

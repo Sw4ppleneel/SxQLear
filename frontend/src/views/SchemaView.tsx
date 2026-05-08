@@ -2,13 +2,13 @@ import React from 'react'
 import { useParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import toast from 'react-hot-toast'
-import { RefreshCw, ChevronDown, ChevronRight, Square, Zap, Search, X, AlertCircle } from 'lucide-react'
-import { getLatestSnapshot, getSchemaGraph, crawlSchema, cancelCrawl, searchColumns } from '@/lib/api'
+import { RefreshCw, ChevronDown, ChevronRight, Square, Zap, Search, X, AlertCircle, BarChart2 } from 'lucide-react'
+import { getLatestSnapshot, getSchemaGraph, crawlSchema, cancelCrawl, searchColumns, profileColumn } from '@/lib/api'
 import { SchemaGraph } from '@/components/schema/SchemaGraph'
 import { Button } from '@/components/common/Button'
 import { useProjectStore } from '@/stores/projectStore'
 import { cn, formatRowCount } from '@/lib/utils'
-import type { TableProfile, ColumnProfile, TermSearchResult } from '@/types'
+import type { TableProfile, ColumnProfile, TermSearchResult, ColumnProfileResult } from '@/types'
 import { useState, useRef } from 'react'
 
 export function SchemaView() {
@@ -293,7 +293,12 @@ export function SchemaView() {
             </div>
             <div>
               {selectedTableData.columns.map((col) => (
-                <ColumnRow key={col.name} column={col} />
+                <ColumnRow
+                  key={col.name}
+                  column={col}
+                  projectId={projectId!}
+                  tableName={selectedTableData.name}
+                />
               ))}
             </div>
           </div>
@@ -333,26 +338,138 @@ function TableListItem({
   )
 }
 
-function ColumnRow({ column }: { column: ColumnProfile }) {
+function ColumnRow({
+  column,
+  projectId,
+  tableName,
+}: {
+  column: ColumnProfile
+  projectId: string
+  tableName: string
+}) {
   const isPk = column.is_primary_key
   const isFk = column.is_foreign_key
+  const [open, setOpen] = useState(false)
+  const [profile, setProfile] = useState<ColumnProfileResult | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  async function loadProfile() {
+    if (profile) { setOpen((o) => !o); return }
+    setOpen(true)
+    setLoading(true)
+    setError(null)
+    try {
+      const result = await profileColumn(projectId, tableName, column.name)
+      setProfile(result)
+    } catch (e: any) {
+      setError(e?.response?.data?.detail || 'Failed to load summary')
+    } finally {
+      setLoading(false)
+    }
+  }
+
   return (
-    <div className="border-b border-surface-border/50 px-4 py-2">
-      <div className="flex items-center gap-1.5">
-        {isPk && <span className="text-2xs text-amber-400">PK</span>}
-        {isFk && <span className="text-2xs text-blue-400">FK</span>}
-        <span className={cn('font-mono text-xs', isPk ? 'text-text-primary font-medium' : 'text-text-secondary')}>
-          {column.name}
-        </span>
+    <div className="border-b border-surface-border/50">
+      <div className="flex items-start gap-1.5 px-4 py-2">
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-1.5">
+            {isPk && <span className="text-2xs text-amber-400">PK</span>}
+            {isFk && <span className="text-2xs text-blue-400">FK</span>}
+            <span className={cn('font-mono text-xs', isPk ? 'text-text-primary font-medium' : 'text-text-secondary')}>
+              {column.name}
+            </span>
+          </div>
+          <p className="mt-0.5 text-2xs text-text-muted">
+            {column.raw_type}
+            {column.is_nullable ? ' · nullable' : ' · not null'}
+          </p>
+          {column.sample_values && column.sample_values.length > 0 && !open && (
+            <p className="mt-0.5 truncate text-2xs text-text-muted">
+              eg: {column.sample_values.slice(0, 3).map(String).join(', ')}
+            </p>
+          )}
+        </div>
+        <button
+          onClick={loadProfile}
+          title="Column summary"
+          className={cn(
+            'mt-0.5 flex-shrink-0 rounded p-0.5 transition-colors',
+            open ? 'text-accent' : 'text-text-muted hover:text-text-secondary'
+          )}
+        >
+          <BarChart2 className="h-3 w-3" />
+        </button>
       </div>
-      <p className="mt-0.5 text-2xs text-text-muted">
-        {column.raw_type}
-        {column.is_nullable ? ' · nullable' : ' · not null'}
-      </p>
-      {column.sample_values && column.sample_values.length > 0 && (
-        <p className="mt-0.5 truncate text-2xs text-text-muted">
-          eg: {column.sample_values.slice(0, 3).map(String).join(', ')}
-        </p>
+
+      {open && (
+        <div className="mx-4 mb-2 rounded border border-surface-border bg-surface-elevated px-3 py-2 text-2xs space-y-1">
+          {loading && <p className="text-text-muted">Loading…</p>}
+          {error && <p className="text-status-rejected">{error}</p>}
+          {profile && (
+            <>
+              <div className="flex justify-between text-text-muted">
+                <span>Rows</span>
+                <span className="tabular-nums text-text-primary">{profile.total_rows.toLocaleString()}</span>
+              </div>
+              <div className="flex justify-between text-text-muted">
+                <span>Non-null</span>
+                <span className="tabular-nums text-text-primary">{profile.non_null_count.toLocaleString()}</span>
+              </div>
+              <div className="flex justify-between text-text-muted">
+                <span>Null</span>
+                <span className={cn('tabular-nums', profile.null_pct > 20 ? 'text-amber-400' : 'text-text-primary')}>
+                  {profile.null_count.toLocaleString()} ({profile.null_pct}%)
+                </span>
+              </div>
+              <div className="flex justify-between text-text-muted">
+                <span>Distinct</span>
+                <span className="tabular-nums text-text-primary">{profile.distinct_count.toLocaleString()}</span>
+              </div>
+
+              {profile.kind === 'numeric' && (
+                <>
+                  <div className="my-1 border-t border-surface-border" />
+                  <div className="flex justify-between text-text-muted">
+                    <span>Min</span>
+                    <span className="tabular-nums text-text-primary">{profile.min ?? '—'}</span>
+                  </div>
+                  <div className="flex justify-between text-text-muted">
+                    <span>Max</span>
+                    <span className="tabular-nums text-text-primary">{profile.max ?? '—'}</span>
+                  </div>
+                  <div className="flex justify-between text-text-muted">
+                    <span>Mean</span>
+                    <span className="tabular-nums text-text-primary">{profile.mean ?? '—'}</span>
+                  </div>
+                </>
+              )}
+
+              {profile.kind === 'categorical' && profile.top_values && profile.top_values.length > 0 && (
+                <>
+                  <div className="my-1 border-t border-surface-border" />
+                  <p className="text-text-muted mb-0.5">Top values</p>
+                  {profile.top_values.map((v) => (
+                    <div key={v.value} className="flex items-center gap-1.5">
+                      <div className="flex-1 min-w-0">
+                        <div className="flex justify-between">
+                          <span className="truncate text-text-primary max-w-[120px]" title={v.value}>{v.value}</span>
+                          <span className="tabular-nums text-text-muted">{v.share_pct}%</span>
+                        </div>
+                        <div className="mt-0.5 h-1 w-full rounded-full bg-surface-overlay overflow-hidden">
+                          <div
+                            className="h-full rounded-full bg-accent"
+                            style={{ width: `${Math.min(v.share_pct, 100)}%` }}
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </>
+              )}
+            </>
+          )}
+        </div>
       )}
     </div>
   )

@@ -1,6 +1,7 @@
 import axios from 'axios'
 import type {
   ColumnMatch,
+  ColumnProfileResult,
   ConnectionTestResult,
   DatabaseDialect,
   DatasetPlan,
@@ -115,6 +116,17 @@ export const searchColumns = async (
   const { data } = await api.post(`/projects/${projectId}/columns/search`, {
     terms,
     top_k: topK,
+  })
+  return data
+}
+
+export const profileColumn = async (
+  projectId: string,
+  table: string,
+  column: string,
+): Promise<ColumnProfileResult> => {
+  const { data } = await api.get(`/projects/${projectId}/columns/profile`, {
+    params: { table, column },
   })
   return data
 }

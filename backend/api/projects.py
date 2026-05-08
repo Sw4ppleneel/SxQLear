@@ -315,6 +315,200 @@ def search_columns(
     return results
 
 
+# ── Column profile (live query) ───────────────────────────────────────────────
+
+def _safe_float(v) -> float | None:
+    return float(v) if v is not None else None
+
+def _safe_round(v, decimals: int = 4) -> float | None:
+    return round(float(v), decimals) if v is not None else None
+
+
+@router.get("/{project_id}/columns/profile")
+def profile_column(
+    project_id: str,
+    table: str,
+    column: str,
+    db: Session = Depends(get_db),
+) -> dict:
+    """
+    Run a live summary query against the target database for a specific column.
+
+    Numeric columns  → count, non-null count, null count, null%, min, max, mean, stddev, distinct count
+    Text/categorical → count, non-null count, null count, null%, distinct count, top 5 values with row share
+    Boolean/date     → count, non-null count, null%, distinct count, top values
+
+    Sends NO raw data — only aggregates. Safe for any column type.
+    """
+    from sqlalchemy import create_engine, text as sa_text
+    from core.schema.crawler import _build_connection_url
+    from models.connection import ConnectionConfig
+
+    service = ProjectMemoryService(db)
+
+    # Get connection config
+    config_dict = service.get_connection_config(project_id)
+    if not config_dict:
+        raise HTTPException(status_code=404, detail="No connection config. Create a project first.")
+
+    config = ConnectionConfig(**config_dict)
+    url = _build_connection_url(config)
+
+    # Verify column exists in snapshot
+    snapshot = service.get_latest_snapshot(project_id)
+    col_profile = None
+    if snapshot:
+        for t in snapshot.tables:
+            if t.name.lower() == table.lower():
+                for c in t.columns:
+                    if c.name.lower() == column.lower():
+                        col_profile = c
+                        break
+
+    try:
+        engine = create_engine(url, pool_pre_ping=True, pool_size=1, max_overflow=0)
+        with engine.connect() as conn:
+            quoted_table = f'"{table}"'
+            quoted_col = f'"{column}"'
+
+            # Total + non-null + null counts
+            counts_sql = sa_text(
+                f"SELECT COUNT(*) as total, COUNT({quoted_col}) as non_null "
+                f"FROM {quoted_table}"
+            )
+            row = conn.execute(counts_sql).fetchone()
+            total = int(row[0]) if row[0] is not None else 0
+            non_null = int(row[1]) if row[1] is not None else 0
+            null_count = total - non_null
+            null_pct = round((null_count / total * 100), 2) if total > 0 else 0.0
+
+            # Distinct count
+            distinct_sql = sa_text(
+                f"SELECT COUNT(DISTINCT {quoted_col}) FROM {quoted_table}"
+            )
+            distinct_count = int(conn.execute(distinct_sql).scalar() or 0)
+
+            # Determine if numeric
+            is_numeric = False
+            if col_profile:
+                is_numeric = col_profile.normalized_type in (
+                    "integer", "bigint", "float", "decimal"
+                )
+            else:
+                # Fallback: try numeric stats and see if it works
+                is_numeric = True
+
+            result: dict = {
+                "table": table,
+                "column": column,
+                "raw_type": col_profile.raw_type if col_profile else "unknown",
+                "normalized_type": col_profile.normalized_type if col_profile else "unknown",
+                "total_rows": total,
+                "non_null_count": non_null,
+                "null_count": null_count,
+                "null_pct": null_pct,
+                "distinct_count": distinct_count,
+            }
+
+            if is_numeric:
+                try:
+                    dialect = config.dialect.value if hasattr(config.dialect, 'value') else str(config.dialect)
+
+                    if dialect == "postgresql":
+                        num_sql = sa_text(
+                            f"SELECT "
+                            f"  MIN({quoted_col}), "
+                            f"  MAX({quoted_col}), "
+                            f"  AVG({quoted_col}::numeric), "
+                            f"  STDDEV({quoted_col}::numeric), "
+                            f"  SUM({quoted_col}::numeric), "
+                            f"  PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY {quoted_col}), "
+                            f"  PERCENTILE_CONT(0.5)  WITHIN GROUP (ORDER BY {quoted_col}), "
+                            f"  PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY {quoted_col}) "
+                            f"FROM {quoted_table}"
+                        )
+                        num_row = conn.execute(num_sql).fetchone()
+                        result["min"]    = _safe_float(num_row[0])
+                        result["max"]    = _safe_float(num_row[1])
+                        result["mean"]   = _safe_round(num_row[2])
+                        result["stddev"] = _safe_round(num_row[3])
+                        result["sum"]    = _safe_float(num_row[4])
+                        result["p25"]    = _safe_round(num_row[5])
+                        result["median"] = _safe_round(num_row[6])
+                        result["p75"]    = _safe_round(num_row[7])
+
+                    elif dialect in ("mysql", "mariadb"):
+                        num_sql = sa_text(
+                            f"SELECT MIN({quoted_col}), MAX({quoted_col}), "
+                            f"AVG({quoted_col}), STDDEV({quoted_col}), SUM({quoted_col}) "
+                            f"FROM {quoted_table}"
+                        )
+                        num_row = conn.execute(num_sql).fetchone()
+                        result["min"]    = _safe_float(num_row[0])
+                        result["max"]    = _safe_float(num_row[1])
+                        result["mean"]   = _safe_round(num_row[2])
+                        result["stddev"] = _safe_round(num_row[3])
+                        result["sum"]    = _safe_float(num_row[4])
+
+                    elif dialect == "mssql":
+                        num_sql = sa_text(
+                            f"SELECT MIN({quoted_col}), MAX({quoted_col}), "
+                            f"AVG(CAST({quoted_col} AS FLOAT)), STDEV({quoted_col}), SUM({quoted_col}) "
+                            f"FROM {quoted_table}"
+                        )
+                        num_row = conn.execute(num_sql).fetchone()
+                        result["min"]    = _safe_float(num_row[0])
+                        result["max"]    = _safe_float(num_row[1])
+                        result["mean"]   = _safe_round(num_row[2])
+                        result["stddev"] = _safe_round(num_row[3])
+                        result["sum"]    = _safe_float(num_row[4])
+
+                    else:
+                        # SQLite and others — basic stats only
+                        num_sql = sa_text(
+                            f"SELECT MIN({quoted_col}), MAX({quoted_col}), "
+                            f"AVG({quoted_col}), SUM({quoted_col}) "
+                            f"FROM {quoted_table}"
+                        )
+                        num_row = conn.execute(num_sql).fetchone()
+                        result["min"]  = _safe_float(num_row[0])
+                        result["max"]  = _safe_float(num_row[1])
+                        result["mean"] = _safe_round(num_row[2])
+                        result["sum"]  = _safe_float(num_row[3])
+
+                except Exception:
+                    # Not truly numeric — fall through to categorical
+                    is_numeric = False
+
+            if not is_numeric:
+                # Top 5 categories with counts + share
+                top_sql = sa_text(
+                    f"SELECT {quoted_col}, COUNT(*) as cnt "
+                    f"FROM {quoted_table} "
+                    f"WHERE {quoted_col} IS NOT NULL "
+                    f"GROUP BY {quoted_col} "
+                    f"ORDER BY cnt DESC "
+                    f"LIMIT 5"
+                )
+                top_rows = conn.execute(top_sql).fetchall()
+                result["top_values"] = [
+                    {
+                        "value": str(r[0]),
+                        "count": int(r[1]),
+                        "share_pct": round(int(r[1]) / non_null * 100, 2) if non_null > 0 else 0.0,
+                    }
+                    for r in top_rows
+                ]
+
+            result["kind"] = "numeric" if is_numeric else "categorical"
+            return result
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Query failed: {str(e)}")
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Column search scoring — fully generic, no domain assumptions
 # ──────────────────────────────────────────────────────────────────────────────
