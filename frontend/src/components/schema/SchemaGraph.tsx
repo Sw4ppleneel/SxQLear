@@ -37,7 +37,7 @@ function TableNode({ data }: { data: TableNodeData }) {
     >
       <div className="border-b border-surface-border px-3 py-1.5">
         <p className="font-mono text-xs font-semibold text-text-primary">{data.label}</p>
-        {data.rowCount !== undefined && (
+        {data.rowCount != null && (
           <p className="text-2xs text-text-muted">
             {data.rowCount.toLocaleString()} rows · {data.columnCount} cols
           </p>

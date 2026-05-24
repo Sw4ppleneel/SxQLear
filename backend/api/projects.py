@@ -200,7 +200,23 @@ def crawl_schema(
         _crawl_cancel_events[project_id] = cancel_event
 
     config = _deserialize_connection_config(config_dict)
-    crawler = SchemaCrawler(config)
+    if config.dialect == DatabaseDialect.AIRTABLE:
+        from pydantic import SecretStr
+        from core.schema.airtable_crawler import AirtableCrawler
+        from models.connection import AirtableConnectionConfig
+
+        if not config.password:
+            raise HTTPException(status_code=400, detail="Airtable API key missing")
+
+        crawler = AirtableCrawler(
+            AirtableConnectionConfig(
+                name=project.name,
+                api_key=SecretStr(config.password.get_secret_value()),
+                base_id=config.database,
+            )
+        )
+    else:
+        crawler = SchemaCrawler(config)
 
     try:
         snapshot = crawler.crawl(
@@ -214,7 +230,7 @@ def crawl_schema(
     finally:
         with _crawl_lock:
             _crawl_cancel_events.pop(project_id, None)
-        crawler.dispose()
+    crawler.dispose()
 
     service.save_snapshot(snapshot)
     return snapshot
@@ -355,7 +371,6 @@ def profile_column(
         raise HTTPException(status_code=404, detail="No connection config. Create a project first.")
 
     config = ConnectionConfig(**config_dict)
-    url = _build_connection_url(config)
 
     # Verify column exists in snapshot
     snapshot = service.get_latest_snapshot(project_id)
@@ -369,6 +384,154 @@ def profile_column(
                         break
 
     try:
+        if config.dialect == DatabaseDialect.AIRTABLE:
+            from urllib.parse import quote as url_quote
+            import math
+            import httpx
+
+            if not config.password:
+                raise HTTPException(status_code=400, detail="Airtable API key missing")
+
+            base_id = config.database
+            api_key = config.password.get_secret_value()
+
+            # Determine if numeric
+            is_numeric = False
+            if col_profile:
+                is_numeric = col_profile.normalized_type in (
+                    "integer", "bigint", "float", "decimal"
+                )
+            else:
+                is_numeric = True
+
+            total = 0
+            non_null = 0
+            distinct_values: set[str] = set()
+            top_counts: dict[str, int] = {}
+
+            num_values: list[float] = []
+            num_min: float | None = None
+            num_max: float | None = None
+            num_sum = 0.0
+            num_count = 0
+            mean = 0.0
+            m2 = 0.0
+
+            def _percentile(values: list[float], q: float) -> float | None:
+                if not values:
+                    return None
+                values_sorted = sorted(values)
+                idx = (len(values_sorted) - 1) * q
+                low = math.floor(idx)
+                high = math.ceil(idx)
+                if low == high:
+                    return values_sorted[int(idx)]
+                weight = idx - low
+                return values_sorted[low] * (1 - weight) + values_sorted[high] * weight
+
+            table_path = url_quote(table, safe="")
+            offset: str | None = None
+
+            with httpx.Client(
+                base_url="https://api.airtable.com/v0",
+                headers={"Authorization": f"Bearer {api_key}"},
+                timeout=30.0,
+            ) as client:
+                while True:
+                    params = {"pageSize": 100}
+                    if offset:
+                        params["offset"] = offset
+                    response = client.get(f"/{base_id}/{table_path}", params=params)
+                    response.raise_for_status()
+                    payload = response.json()
+                    records = payload.get("records", [])
+
+                    total += len(records)
+                    for record in records:
+                        fields = record.get("fields", {})
+                        if column not in fields or fields[column] is None:
+                            continue
+
+                        value = fields[column]
+                        non_null += 1
+                        value_str = str(value)
+                        distinct_values.add(value_str)
+                        top_counts[value_str] = top_counts.get(value_str, 0) + 1
+
+                        if is_numeric and isinstance(value, (int, float)):
+                            float_val = float(value)
+                            num_values.append(float_val)
+                            num_sum += float_val
+                            num_count += 1
+                            if num_min is None or float_val < num_min:
+                                num_min = float_val
+                            if num_max is None or float_val > num_max:
+                                num_max = float_val
+
+                            delta = float_val - mean
+                            mean += delta / num_count
+                            delta2 = float_val - mean
+                            m2 += delta * delta2
+
+                    offset = payload.get("offset")
+                    if not offset:
+                        break
+
+            null_count = total - non_null
+            null_pct = round((null_count / total * 100), 2) if total > 0 else 0.0
+            distinct_count = len(distinct_values)
+
+            result: dict = {
+                "table": table,
+                "column": column,
+                "raw_type": col_profile.raw_type if col_profile else "unknown",
+                "normalized_type": col_profile.normalized_type if col_profile else "unknown",
+                "total_rows": total,
+                "non_null_count": non_null,
+                "null_count": null_count,
+                "null_pct": null_pct,
+                "distinct_count": distinct_count,
+            }
+
+            if is_numeric and num_count > 0:
+                variance = (m2 / (num_count - 1)) if num_count > 1 else 0.0
+                stddev = math.sqrt(variance) if num_count > 1 else 0.0
+                median_val = _percentile(num_values, 0.5)
+                p25_val = _percentile(num_values, 0.25)
+                p75_val = _percentile(num_values, 0.75)
+
+                result["min"] = _safe_float(num_min)
+                result["max"] = _safe_float(num_max)
+                result["mean"] = _safe_round(mean)
+                result["median"] = _safe_round(median_val)
+                result["stddev"] = _safe_round(stddev)
+                result["variance"] = _safe_round(variance)
+                result["sum"] = _safe_float(num_sum)
+                result["p25"] = _safe_round(p25_val)
+                result["p75"] = _safe_round(p75_val)
+
+                if num_min is not None and num_max is not None:
+                    result["range"] = num_max - num_min
+                if p25_val is not None and p75_val is not None:
+                    result["iqr"] = p75_val - p25_val
+                if mean != 0 and stddev is not None:
+                    result["cv"] = _safe_round((stddev / abs(mean)) * 100)
+
+            if not is_numeric:
+                top_values = sorted(top_counts.items(), key=lambda item: item[1], reverse=True)[:10]
+                result["top_values"] = [
+                    {
+                        "value": value,
+                        "count": count,
+                        "share_pct": round(count / non_null * 100, 2) if non_null > 0 else 0.0,
+                    }
+                    for value, count in top_values
+                ]
+
+            result["kind"] = "numeric" if is_numeric else "categorical"
+            return result
+
+        url = _build_connection_url(config)
         engine = create_engine(url, pool_pre_ping=True, pool_size=1, max_overflow=0)
         with engine.connect() as conn:
             quoted_table = f'"{table}"'

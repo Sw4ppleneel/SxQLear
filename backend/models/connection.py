@@ -13,6 +13,7 @@ class DatabaseDialect(str, Enum):
     SQLITE = "sqlite"
     MSSQL = "mssql"
     DUCKDB = "duckdb"
+    AIRTABLE = "airtable"
 
 
 class ConnectionConfig(BaseModel):
@@ -61,3 +62,24 @@ class ConnectionSummary(BaseModel):
     name: str
     dialect: DatabaseDialect
     display_name: str
+
+
+class AirtableConnectionConfig(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    name: str = Field(..., min_length=1, max_length=128)
+    dialect: DatabaseDialect = DatabaseDialect.AIRTABLE
+    api_key: SecretStr
+    base_id: str = Field(..., min_length=1)
+
+    def get_display_name(self) -> str:
+        return f"airtable:///{self.base_id}"
+
+    model_config = {"json_encoders": {SecretStr: lambda _: "***"}}
+
+
+class AirtableConnectionSummary(BaseModel):
+    id: str
+    name: str
+    dialect: DatabaseDialect
+    display_name: str
+    base_id: str

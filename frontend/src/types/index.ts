@@ -1,6 +1,6 @@
 // ─── Connection ───────────────────────────────────────────────────────────────
 
-export type DatabaseDialect = 'postgresql' | 'mysql' | 'sqlite' | 'mssql' | 'duckdb'
+export type DatabaseDialect = 'postgresql' | 'mysql' | 'sqlite' | 'mssql' | 'duckdb' | 'airtable'
 
 export interface ConnectionConfig {
   id: string

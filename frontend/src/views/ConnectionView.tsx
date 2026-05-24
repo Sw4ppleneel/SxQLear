@@ -21,6 +21,7 @@ const DIALECTS: Array<{ value: DatabaseDialect; label: string }> = [
   { value: 'mysql', label: 'MySQL' },
   { value: 'sqlite', label: 'SQLite' },
   { value: 'mssql', label: 'SQL Server' },
+  { value: 'airtable' as DatabaseDialect, label: 'Airtable' },
 ]
 
 interface FormValues {
@@ -32,6 +33,8 @@ interface FormValues {
   database: string
   username: string
   password: string
+  api_key: string
+  base_id: string
 }
 
 const INITIAL_FORM: FormValues = {
@@ -43,6 +46,8 @@ const INITIAL_FORM: FormValues = {
   database: '',
   username: '',
   password: '',
+  api_key: '',
+  base_id: '',
 }
 
 type PanelMode = 'new' | 'edit'
@@ -83,14 +88,32 @@ export function ConnectionView() {
         database: String(configData.database ?? ''),
         username: String(configData.username ?? ''),
         password: '',
+        api_key: '',
+        base_id: String(configData.database ?? ''),
       })
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [configData, editProjectId])
 
   const testMutation = useMutation({
-    mutationFn: () =>
-      testConnection({
+    mutationFn: async () => {
+      if (form.dialect === 'airtable') {
+        const response = await fetch('/api/v1/connections/airtable/test', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: form.name || 'test',
+            api_key: form.api_key,
+            base_id: form.base_id,
+          }),
+        })
+        if (!response.ok) {
+          throw new Error('Request failed')
+        }
+        return response.json()
+      }
+
+      return testConnection({
         name: form.name || 'test',
         dialect: form.dialect,
         host: form.host || undefined,
@@ -98,7 +121,8 @@ export function ConnectionView() {
         database: form.database,
         username: form.username || undefined,
         password: form.password || undefined,
-      }),
+      })
+    },
     onSuccess: (result) => {
       if (result.success) {
         setTestResult({ success: true, message: `Connected in ${result.latency_ms?.toFixed(0)}ms` })
@@ -110,17 +134,39 @@ export function ConnectionView() {
   })
 
   const createMutation = useMutation({
-    mutationFn: () =>
-      createProject({
+    mutationFn: async () => {
+      const project = await createProject({
         name: form.name,
         description: form.description || undefined,
         dialect: form.dialect,
-        host: form.host || undefined,
-        port: form.port ? parseInt(form.port) : undefined,
-        database: form.database,
-        username: form.username || undefined,
-        password: form.password || undefined,
-      }),
+        // NOTE: Airtable credentials are stored in the SQL-shaped ConnectionConfig for now.
+        // base_id -> database, api_key -> password. This is a temporary compatibility hack
+        // until AirtableConnectionConfig is persisted separately on the backend.
+        host: form.dialect === 'airtable' ? undefined : (form.host || undefined),
+        port: form.dialect === 'airtable' ? undefined : (form.port ? parseInt(form.port) : undefined),
+        database: form.dialect === 'airtable' ? form.base_id : form.database,
+        username: form.dialect === 'airtable' ? undefined : (form.username || undefined),
+        password: form.dialect === 'airtable' ? form.api_key : (form.password || undefined),
+      })
+
+      if (form.dialect === 'airtable') {
+        const response = await fetch(`/api/v1/connections/airtable/crawl?project_id=${project.id}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: form.name || 'airtable',
+            api_key: form.api_key,
+            base_id: form.base_id,
+          }),
+        })
+
+        if (!response.ok) {
+          throw new Error('Airtable crawl failed')
+        }
+      }
+
+      return project
+    },
     onSuccess: (project) => {
       addProject(project)
       queryClient.invalidateQueries({ queryKey: ['projects'] })
@@ -138,11 +184,14 @@ export function ConnectionView() {
         name: form.name || undefined,
         description: form.description || undefined,
         dialect: form.dialect,
-        host: form.host || undefined,
-        port: form.port ? parseInt(form.port) : undefined,
-        database: form.database || undefined,
-        username: form.username || undefined,
-        password: form.password || undefined,
+        // NOTE: Airtable credentials are stored in the SQL-shaped ConnectionConfig for now.
+        // base_id -> database, api_key -> password. This is a temporary compatibility hack
+        // until AirtableConnectionConfig is persisted separately on the backend.
+        host: form.dialect === 'airtable' ? undefined : (form.host || undefined),
+        port: form.dialect === 'airtable' ? undefined : (form.port ? parseInt(form.port) : undefined),
+        database: form.dialect === 'airtable' ? form.base_id : (form.database || undefined),
+        username: form.dialect === 'airtable' ? undefined : (form.username || undefined),
+        password: form.dialect === 'airtable' ? (form.api_key || undefined) : (form.password || undefined),
       }),
     onSuccess: (project) => {
       queryClient.invalidateQueries({ queryKey: ['projects'] })
@@ -197,12 +246,26 @@ export function ConnectionView() {
       mysql: '3306',
       mssql: '1433',
     }
-    setForm((f) => ({ ...f, dialect, port: defaultPorts[dialect] ?? '' }))
+    setForm((f) => ({
+      ...f,
+      dialect,
+      port: defaultPorts[dialect] ?? '',
+      host: dialect === 'airtable' ? '' : f.host,
+      database: dialect === 'airtable' ? '' : f.database,
+      username: dialect === 'airtable' ? '' : f.username,
+      password: dialect === 'airtable' ? '' : f.password,
+      api_key: dialect === 'airtable' ? '' : f.api_key,
+      base_id: dialect === 'airtable' ? '' : f.base_id,
+    }))
     setTestResult(null)
   }
 
+  const isAirtable = form.dialect === 'airtable'
   const isSQLite = form.dialect === 'sqlite'
   const isEditing = panelMode === 'edit'
+  const isFormValid = isAirtable
+    ? Boolean(form.name && form.api_key && form.base_id)
+    : Boolean(form.name && form.database)
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
@@ -304,7 +367,27 @@ export function ConnectionView() {
                   </select>
                 </Field>
 
-                {isSQLite ? (
+                {isAirtable ? (
+                  <>
+                    <Field label="API key">
+                      <input
+                        type="password"
+                        className={inputClass}
+                        placeholder="patXXXXXXXXXXXXXX"
+                        value={form.api_key}
+                        onChange={(e) => setField('api_key', e.target.value)}
+                      />
+                    </Field>
+                    <Field label="Base ID">
+                      <input
+                        className={inputClass}
+                        placeholder="appXXXXXXXXXXXXXX"
+                        value={form.base_id}
+                        onChange={(e) => setField('base_id', e.target.value)}
+                      />
+                    </Field>
+                  </>
+                ) : isSQLite ? (
                   <Field label="File path">
                     <input
                       className={inputClass}
@@ -380,7 +463,7 @@ export function ConnectionView() {
                       size="sm"
                       onClick={() => updateMutation.mutate()}
                       loading={updateMutation.isPending}
-                      disabled={!form.name || !form.database}
+                      disabled={!isFormValid}
                     >
                       Save Changes
                     </Button>
@@ -390,7 +473,7 @@ export function ConnectionView() {
                       size="sm"
                       onClick={() => createMutation.mutate()}
                       loading={createMutation.isPending}
-                      disabled={!form.name || !form.database}
+                      disabled={!isFormValid}
                     >
                       Create Project
                     </Button>
