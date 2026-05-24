@@ -115,6 +115,7 @@ The system works fully without LLM keys. LLM reasoning is a supplementary layer 
 | MySQL      | Supported  |
 | SQLite     | Supported  |
 | MSSQL      | Supported  |
+| Airtable   | Supported  |
 | DuckDB     | Planned    |
 
 ---
