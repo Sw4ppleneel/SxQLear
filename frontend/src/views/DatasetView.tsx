@@ -5,14 +5,12 @@ import toast from 'react-hot-toast'
 import { Code, Plus, FileText } from 'lucide-react'
 import {
   getLatestSnapshot,
-  getRelationships,
   buildDatasetPlan,
   listDatasetPlans,
   getDatasetPlan,
   generateSQL,
 } from '@/lib/api'
 import { Button } from '@/components/common/Button'
-import { RelationshipCard } from '@/components/inference/RelationshipCard'
 import type { DatasetPlan } from '@/types'
 import { cn } from '@/lib/utils'
 
@@ -38,11 +36,6 @@ export function DatasetView() {
     retry: false,
   })
 
-  const { data: relationships = [] } = useQuery({
-    queryKey: ['relationships', projectId],
-    queryFn: () => getRelationships(projectId!),
-    enabled: !!projectId,
-  })
 
   const { data: plans = [], refetch: refetchPlans } = useQuery({
     queryKey: ['dataset-plans', projectId],
@@ -73,9 +66,6 @@ export function DatasetView() {
     onError: () => toast.error('Failed to generate SQL'),
   })
 
-  const confirmedRelationships = relationships.filter(
-    (r) => r.confidence === 'certain' || r.confidence === 'high'
-  )
 
   const tables = snapshot?.tables ?? []
 

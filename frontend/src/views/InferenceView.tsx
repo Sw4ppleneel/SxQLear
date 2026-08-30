@@ -2,7 +2,7 @@ import React from 'react'
 import { useParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import toast from 'react-hot-toast'
-import { Play, SlidersHorizontal, Plus, Sparkles, X, Check, ChevronDown, ChevronRight } from 'lucide-react'
+import { Play, SlidersHorizontal, Plus, Sparkles, X, Check } from 'lucide-react'
 import {
   runInference,
   getRelationships,
@@ -14,7 +14,6 @@ import { RelationshipCard } from '@/components/inference/RelationshipCard'
 import { Button } from '@/components/common/Button'
 import { ConfidenceBadge } from '@/components/common/Badges'
 import type {
-  InferredRelationship,
   ConfidenceTier,
   ManualRelationshipRequest,
   SuggestedJoin,
@@ -77,7 +76,7 @@ export function InferenceView() {
 
   const manualMutation = useMutation({
     mutationFn: (req: ManualRelationshipRequest) => createManualRelationship(projectId!, req),
-    onSuccess: (rel) => {
+    onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['relationships', projectId] })
       queryClient.invalidateQueries({ queryKey: ['memory', projectId] })
       toast.success(`Manual relationship saved and confirmed`)
@@ -108,7 +107,7 @@ export function InferenceView() {
       relationship_type: s.relationship_type as any,
       reason: `AI suggestion: ${s.reasoning}`,
     }),
-    onSuccess: (_, __, ctx) => {
+    onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['relationships', projectId] })
       queryClient.invalidateQueries({ queryKey: ['memory', projectId] })
     },

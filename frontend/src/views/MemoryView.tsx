@@ -1,15 +1,13 @@
-import React from 'react'
 import { useParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
-import { getMemorySummary, getRelationships } from '@/lib/api'
+import { getMemorySummary, getRelationships, getAnnotations, getDecisions } from '@/lib/api'
 import { RelationshipCard } from '@/components/inference/RelationshipCard'
-import { ConfidenceBadge, StatusBadge } from '@/components/common/Badges'
-import { formatDate, formatRowCount } from '@/lib/utils'
+import { StatusBadge } from '@/components/common/Badges'
 
 export function MemoryView() {
   const { projectId } = useParams<{ projectId: string }>()
 
-  const { data: summary, isLoading: summaryLoading } = useQuery({
+  const { data: summary } = useQuery({
     queryKey: ['memory', projectId],
     queryFn: () => getMemorySummary(projectId!),
     enabled: !!projectId,
@@ -21,9 +19,22 @@ export function MemoryView() {
     enabled: !!projectId,
   })
 
-  const confirmed = relationships.filter(
-    (r) => summary?.validated_relationship_ids.includes(r.id)
+  const { data: annotations = [] } = useQuery({
+    queryKey: ['annotations', projectId],
+    queryFn: () => getAnnotations(projectId!),
+    enabled: !!projectId,
+  })
+
+  const { data: decisions = [] } = useQuery({
+    queryKey: ['decisions', projectId],
+    queryFn: () => getDecisions(projectId!),
+    enabled: !!projectId,
+  })
+
+  const confirmedIds = new Set(
+    decisions.filter((d) => d.status === 'confirmed').map((d) => d.relationship_id)
   )
+  const confirmed = relationships.filter((r) => confirmedIds.has(r.id))
 
   return (
     <div className="flex h-full flex-col">
@@ -39,10 +50,13 @@ export function MemoryView() {
         {/* Summary stats */}
         {summary && (
           <div className="grid grid-cols-4 gap-3">
-            <StatCard label="Total Tables" value={summary.total_tables} />
-            <StatCard label="Total Columns" value={summary.total_columns} />
-            <StatCard label="Inferred Relationships" value={summary.relationship_count} />
-            <StatCard label="Confirmed" value={summary.confirmed_count} />
+            <StatCard label="Total Tables" value={summary.table_count} />
+            <StatCard
+              label="Inferred Relationships"
+              value={summary.total_inferred_relationships}
+            />
+            <StatCard label="Confirmed" value={summary.confirmed_relationships} />
+            <StatCard label="Annotations" value={summary.annotation_count} />
           </div>
         )}
 
@@ -72,13 +86,13 @@ export function MemoryView() {
         </section>
 
         {/* Annotations */}
-        {summary?.annotations && summary.annotations.length > 0 && (
+        {annotations.length > 0 && (
           <section>
             <h2 className="mb-3 text-xs font-medium uppercase tracking-widest text-text-muted">
-              Annotations ({summary.annotations.length})
+              Annotations ({annotations.length})
             </h2>
             <div className="space-y-2">
-              {summary.annotations.map((ann) => (
+              {annotations.map((ann) => (
                 <div
                   key={ann.id}
                   className="rounded border border-surface-border bg-surface-elevated px-4 py-3"

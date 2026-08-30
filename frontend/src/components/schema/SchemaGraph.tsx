@@ -1,10 +1,9 @@
-import React, { useCallback, useMemo } from 'react'
+import { useCallback, useMemo } from 'react'
 import ReactFlow, {
   Background,
   Controls,
   MiniMap,
   type NodeTypes,
-  type EdgeTypes,
   type Node,
   type Edge,
   useNodesState,
@@ -13,6 +12,7 @@ import ReactFlow, {
   MarkerType,
 } from 'reactflow'
 import 'reactflow/dist/style.css'
+import dagre from 'dagre'
 import type { SchemaGraphData, SchemaGraphNode, SchemaGraphEdge, ConfidenceTier } from '@/types'
 import { cn } from '@/lib/utils'
 
@@ -70,19 +70,50 @@ const CONFIDENCE_EDGE_COLORS: Record<ConfidenceTier, string> = {
 
 const NODE_TYPES: NodeTypes = { tableNode: TableNode }
 
-function applyDagreLayout(nodes: Node[], edges: Edge[]): Node[] {
-  // Simple grid layout for initial render.
-  // Production: use dagre or elkjs for automatic hierarchical layout.
-  const COLS = 4
-  const X_GAP = 240
-  const Y_GAP = 160
-  return nodes.map((node, i) => ({
-    ...node,
-    position: {
-      x: (i % COLS) * X_GAP + 20,
-      y: Math.floor(i / COLS) * Y_GAP + 20,
-    },
-  }))
+const NODE_WIDTH = 180
+const NODE_HEIGHT = 70
+
+/**
+ * Hierarchical layout via dagre, keyed off actual FK/relationship edges so the
+ * graph reads as a join map rather than an arbitrary grid. Falls back to a
+ * grid when there are no edges (e.g. a fresh crawl with no inferred
+ * relationships yet), since dagre has nothing to hierarchy-sort in that case.
+ */
+function layoutNodes(nodes: Node[], edges: Edge[]): Node[] {
+  if (edges.length === 0) {
+    const COLS = Math.max(1, Math.ceil(Math.sqrt(nodes.length)))
+    return nodes.map((node, i) => ({
+      ...node,
+      position: {
+        x: (i % COLS) * (NODE_WIDTH + 60) + 20,
+        y: Math.floor(i / COLS) * (NODE_HEIGHT + 90) + 20,
+      },
+    }))
+  }
+
+  const g = new dagre.graphlib.Graph()
+  g.setGraph({ rankdir: 'LR', nodesep: 50, ranksep: 110 })
+  g.setDefaultEdgeLabel(() => ({}))
+
+  for (const node of nodes) {
+    g.setNode(node.id, { width: NODE_WIDTH, height: NODE_HEIGHT })
+  }
+  for (const edge of edges) {
+    if (g.hasNode(edge.source) && g.hasNode(edge.target)) {
+      g.setEdge(edge.source, edge.target)
+    }
+  }
+
+  dagre.layout(g)
+
+  return nodes.map((node) => {
+    const pos = g.node(node.id)
+    if (!pos) return node
+    return {
+      ...node,
+      position: { x: pos.x - NODE_WIDTH / 2, y: pos.y - NODE_HEIGHT / 2 },
+    }
+  })
 }
 
 interface SchemaGraphProps {
@@ -98,20 +129,17 @@ export function SchemaGraph({
   onTableSelect,
   onRelationshipSelect,
 }: SchemaGraphProps) {
-  const rfNodes: Node[] = useMemo(
+  const baseNodes: Node[] = useMemo(
     () =>
-      applyDagreLayout(
-        data.nodes.map((n: SchemaGraphNode) => ({
-          id: n.id,
-          type: 'tableNode',
-          position: n.position,
-          data: {
-            ...n.data,
-            isSelected: n.id === selectedTable,
-          },
-        })),
-        []
-      ),
+      data.nodes.map((n: SchemaGraphNode) => ({
+        id: n.id,
+        type: 'tableNode',
+        position: n.position,
+        data: {
+          ...n.data,
+          isSelected: n.id === selectedTable,
+        },
+      })),
     [data.nodes, selectedTable]
   )
 
@@ -132,6 +160,11 @@ export function SchemaGraph({
         }
       }),
     [data.edges]
+  )
+
+  const rfNodes: Node[] = useMemo(
+    () => layoutNodes(baseNodes, rfEdges),
+    [baseNodes, rfEdges]
   )
 
   const [nodes, , onNodesChange] = useNodesState(rfNodes)
@@ -159,6 +192,8 @@ export function SchemaGraph({
     )
   }
 
+  const isLargeGraph = data.nodes.length > 75
+
   return (
     <ReactFlow
       nodes={nodes}
@@ -168,6 +203,7 @@ export function SchemaGraph({
       onNodeClick={onNodeClick}
       onEdgeClick={onEdgeClick}
       nodeTypes={NODE_TYPES}
+      onlyRenderVisibleElements={isLargeGraph}
       fitView
       fitViewOptions={{ padding: 0.2 }}
       className="bg-surface"
@@ -181,11 +217,13 @@ export function SchemaGraph({
       <Controls
         className="!bg-surface-elevated !border-surface-border !text-text-secondary"
       />
-      <MiniMap
-        nodeColor="#1a1a1a"
-        maskColor="rgba(0,0,0,0.6)"
-        style={{ background: '#111', border: '1px solid #2a2a2a' }}
-      />
+      {!isLargeGraph && (
+        <MiniMap
+          nodeColor="#1a1a1a"
+          maskColor="rgba(0,0,0,0.6)"
+          style={{ background: '#111', border: '1px solid #2a2a2a' }}
+        />
+      )}
     </ReactFlow>
   )
 }

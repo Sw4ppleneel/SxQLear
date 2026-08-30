@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import { useState } from 'react'
 import { ChevronDown, ChevronRight } from 'lucide-react'
 import type { InferredRelationship, SignalType } from '@/types'
 import { ConfidenceBadge, StatusBadge } from '@/components/common/Badges'

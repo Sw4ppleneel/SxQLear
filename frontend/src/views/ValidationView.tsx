@@ -1,4 +1,3 @@
-import React, { useEffect } from 'react'
 import { useParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import toast from 'react-hot-toast'
@@ -7,7 +6,6 @@ import { RelationshipCard } from '@/components/inference/RelationshipCard'
 import { Button } from '@/components/common/Button'
 import { useValidationStore } from '@/stores/validationStore'
 import type { ValidationStatus } from '@/types'
-import { cn } from '@/lib/utils'
 
 export function ValidationView() {
   const { projectId } = useParams<{ projectId: string }>()

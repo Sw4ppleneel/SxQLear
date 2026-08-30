@@ -1,4 +1,4 @@
-import React from 'react'
+
 import { cn } from '@/lib/utils'
 import type { ConfidenceTier, ValidationStatus } from '@/types'
 import { CONFIDENCE_CONFIG, STATUS_CONFIG, formatScore } from '@/lib/utils'
