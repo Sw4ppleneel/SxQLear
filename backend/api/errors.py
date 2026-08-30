@@ -1,11 +1,9 @@
 from __future__ import annotations
 
-import time
-
-from fastapi import HTTPException, Request
-from fastapi.responses import JSONResponse
-from pydantic import BaseModel
 from typing import Optional
+
+from fastapi import HTTPException
+from pydantic import BaseModel
 
 
 class APIError(BaseModel):
@@ -27,3 +25,10 @@ def bad_request(message: str) -> HTTPException:
 
 def server_error(message: str) -> HTTPException:
     return HTTPException(status_code=500, detail=message)
+
+
+def no_snapshot() -> HTTPException:
+    """Shared 404 for 'no schema snapshot exists yet' — previously this
+    message was hand-typed with slightly different wording at each of five
+    call sites across inference.py/datasets.py/projects.py."""
+    return HTTPException(status_code=404, detail="No schema snapshot found. Run a crawl first.")

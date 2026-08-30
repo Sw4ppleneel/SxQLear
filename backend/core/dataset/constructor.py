@@ -115,7 +115,12 @@ class DatasetConstructor:
             rel_map[(rel.target_table, rel.source_table)] = rel
 
         joins: list[JoinClause] = []
-        all_tables = set([base_table] + [j.right_table for j in joins])
+        # Tables already reachable in the query being built — starts as just
+        # base_table and grows as each join is appended below. (Previously
+        # this comprehended over `joins` before anything had been appended
+        # to it, so it was always just {base_table} — dead code that looked
+        # like it was tracking join state but never did.)
+        all_tables: set[str] = {base_table}
 
         for target in target_tables:
             if target == base_table:
@@ -139,17 +144,23 @@ class DatasetConstructor:
                 )
                 continue
 
-            # Determine join direction
+            # Determine join direction: right_table must always be `target`
+            # (the table this iteration is introducing), and left_table must
+            # be whichever endpoint is already in the query (base_table or a
+            # previously joined table) — otherwise the JOIN re-introduces a
+            # table already present while the intended new table never gets
+            # added, and the ON clause ends up referencing an alias that
+            # doesn't exist in the query.
+            #
+            # rel was looked up via a bidirectional index (line ~113-115), so
+            # exactly one of rel.source_table / rel.target_table equals
+            # `target`; the other is the already-present side.
             if rel.source_table == target:
-                left_table = target
-                left_col = rel.source_column
-                right_table = rel.target_table
-                right_col = rel.target_column
+                left_table, left_col = rel.target_table, rel.target_column
+                right_table, right_col = rel.source_table, rel.source_column
             else:
-                left_table = rel.source_table
-                left_col = rel.source_column
-                right_table = rel.target_table
-                right_col = rel.target_column
+                left_table, left_col = rel.source_table, rel.source_column
+                right_table, right_col = rel.target_table, rel.target_column
 
             joins.append(JoinClause(
                 join_type=JoinType.LEFT,

@@ -93,8 +93,17 @@ class StructuralSignal:
         if score == 0.0:
             return None
 
-        # ── Type compatibility modifier ────────────────────────────────────────
-        if not self._types_compatible(source_col, target_col):
+        # ── Type compatibility modifier ──────────────────────────────────────
+        # A hard mismatch (e.g. a date column vs. a boolean column) means the
+        # name match is very likely coincidental — exclude it outright rather
+        # than merely discounting it, since a discount alone (0.78 * 0.30 =
+        # 0.234) can still clear settings.min_inference_score (0.20) and
+        # surface as an inferred relationship. A soft mismatch (integer vs.
+        # string, common for legacy-DB ID columns) is still just discounted.
+        compatibility = self._type_compatibility(source_col, target_col)
+        if compatibility == "hard_mismatch":
+            return None
+        elif compatibility == "soft_mismatch":
             score *= 0.30
             reasons.append(
                 f"⚠ Type mismatch: {source_col.raw_type} vs {target_col.raw_type} "
@@ -124,10 +133,11 @@ class StructuralSignal:
         )
 
     @staticmethod
-    def _types_compatible(a: ColumnProfile, b: ColumnProfile) -> bool:
+    def _type_compatibility(a: ColumnProfile, b: ColumnProfile) -> str:
         """
-        Check if two column types are plausibly compatible for a join.
-        This is intentionally permissive — we flag mismatch, not block inference.
+        Classify two column types' compatibility for a join as one of:
+        "compatible", "soft_mismatch" (discount but allow), or
+        "hard_mismatch" (exclude — see caller).
         """
         from models.schema import ColumnType
 
@@ -151,8 +161,9 @@ class StructuralSignal:
 
         # Same category → compatible
         if cat_a == cat_b:
-            return True
-        # Integer IDs and varchar IDs are sometimes mixed (legacy DBs)
+            return "compatible"
+        # Integer IDs and varchar IDs are sometimes mixed (legacy DBs) —
+        # plausible enough to keep, just discounted.
         if {cat_a, cat_b} <= {"integer", "string"}:
-            return True  # Flag as warning but allow
-        return False
+            return "soft_mismatch"
+        return "hard_mismatch"

@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from api.errors import not_found
+from api.errors import no_snapshot, not_found
 from core.dataset.constructor import DatasetConstructor
 from core.dataset.sql_generator import SQLGenerator
 from core.memory.project_memory import ProjectMemoryService
@@ -46,7 +46,7 @@ def build_dataset_plan(
 
     snapshot = service.get_latest_snapshot(project_id)
     if not snapshot:
-        raise HTTPException(status_code=404, detail="No snapshot found. Run a crawl first.")
+        raise no_snapshot()
 
     # Only use confirmed relationships in dataset plans
     all_relationships = service.get_inferred_relationships(project_id)

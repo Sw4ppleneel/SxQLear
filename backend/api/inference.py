@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from api.errors import not_found
+from api.errors import no_snapshot, not_found
 from api.projects import _deserialize_connection_config
 from config import settings
 from core.inference.engine import InferenceEngine
@@ -50,10 +50,7 @@ def run_inference(
 
     snapshot = service.get_latest_snapshot(project_id)
     if not snapshot:
-        raise HTTPException(
-            status_code=404,
-            detail="No snapshot found. Run a schema crawl first.",
-        )
+        raise no_snapshot()
 
     # Build target engine for statistical analysis if requested
     target_engine = None
@@ -135,7 +132,7 @@ def create_manual_relationship(
 
     snapshot = service.get_latest_snapshot(project_id)
     if not snapshot:
-        raise HTTPException(status_code=404, detail="No snapshot found. Run a crawl first.")
+        raise no_snapshot()
 
     # Validate tables and columns exist in snapshot
     src_table = snapshot.get_table(req.source_table)
@@ -241,7 +238,7 @@ def suggest_relationships(
     service = ProjectMemoryService(db)
     snapshot = service.get_latest_snapshot(project_id)
     if not snapshot:
-        raise HTTPException(status_code=404, detail="No snapshot found. Run a crawl first.")
+        raise no_snapshot()
 
     # Build a compact schema digest — table names, column names, types, row counts
     # Never sends actual data values to the LLM
