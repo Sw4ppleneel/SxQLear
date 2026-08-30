@@ -13,6 +13,7 @@ from core.memory.project_memory import ProjectMemoryService
 from core.schema.crawler import SchemaCrawler
 from core.schema.graph import SchemaGraph
 from db.session import get_db
+from core.security.secrets import get_secret_box
 from models.connection import ConnectionConfig, DatabaseDialect
 from models.memory import Project
 from models.schema import SchemaSnapshot, TableProfile
@@ -49,10 +50,12 @@ def create_project(req: CreateProjectRequest, db: Session = Depends(get_db)) -> 
         ssl_mode=req.ssl_mode,
     )
 
-    # Store config as JSON — password is masked in the serialized form
+    # Store config as JSON. The password is encrypted at rest — never
+    # persisted in plaintext, unlike the model's default "***" JSON mask
+    # (which is display-only and would otherwise get silently overwritten).
     config_dict = config.model_dump(mode="json")
     if req.password:
-        config_dict["password"] = req.password  # Store for re-use; only in local SQLite
+        config_dict["password"] = get_secret_box().encrypt(req.password)
 
     service = ProjectMemoryService(db)
     return service.create_project(
@@ -122,7 +125,7 @@ def update_project(
     if req.name is not None:
         new_config["name"] = req.name
     if req.password:  # Only replace if non-empty string supplied
-        new_config["password"] = req.password
+        new_config["password"] = get_secret_box().encrypt(req.password)
 
     from db.repositories.project_repo import ProjectRepository
     repo = ProjectRepository(db)
@@ -846,12 +849,16 @@ def _score_column(
 
 
 def _deserialize_connection_config(config_dict: dict) -> ConnectionConfig:
-    """Reconstruct a ConnectionConfig from the stored JSON dict."""
+    """Reconstruct a ConnectionConfig from the stored JSON dict, decrypting
+    the password if it was stored encrypted (legacy plaintext rows — from
+    before encryption-at-rest existed — are passed through as-is; see
+    migration 0002_encrypt_connection_secrets which backfills them)."""
     from pydantic import SecretStr
 
     raw_password = config_dict.get("password")
     if raw_password and raw_password != "***":
-        config_dict = {**config_dict, "password": SecretStr(raw_password)}
+        plaintext = get_secret_box().decrypt(raw_password)
+        config_dict = {**config_dict, "password": SecretStr(plaintext)}
     else:
         config_dict = {**config_dict, "password": None}
 
