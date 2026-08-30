@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import re
-import threading
 from typing import Literal, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Response
@@ -9,8 +8,8 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from api.errors import bad_request, no_snapshot, not_found
+from config import settings
 from core.memory.project_memory import ProjectMemoryService
-from core.schema.crawler import SchemaCrawler
 from core.schema.graph import SchemaGraph
 from db.session import get_db
 from core.security.secrets import get_secret_box
@@ -152,36 +151,73 @@ def delete_project(project_id: str, db: Session = Depends(get_db)):
 
 
 # ── Schema crawling ───────────────────────────────────────────────────────────
-
-# In-memory cancel events: project_id → threading.Event
-# When set, the running crawl for that project stops after the current table.
-_crawl_cancel_events: dict[str, threading.Event] = {}
-_crawl_lock = threading.Lock()
+#
+# Crawls run as background jobs, not inline in the request/response cycle.
+# Previously the whole crawl (which can run for minutes on a wide schema)
+# blocked the HTTP request, and cancellation was a module-level
+# threading.Event dict — invisible to any worker process other than the one
+# that started the crawl, and lost entirely on restart. CrawlJobService
+# persists job + per-table-per-stage task state in the database instead, so
+# progress survives a restart and DELETE works regardless of which worker
+# handles it.
 
 
 class CrawlOptions(BaseModel):
     mode: Literal["full", "quick"] = "full"
     """
-    full  — full column profiling (null/distinct counts, sample values) + inference
-    quick — table names, column headers, and row counts only; still runs inference
+    full  — catalog + row counts + per-column profiling (null/distinct/sample values)
+    quick — catalog + row counts only; fast, still enough to run inference
     """
 
 
-@router.post("/{project_id}/crawl", response_model=SchemaSnapshot)
+def _discover_table_names(config: ConnectionConfig) -> list[str]:
+    """Fast, synchronous table-name discovery so the job's per-table task
+    rows can be created before returning 202 — the expensive column/FK/index
+    reflection and all profiling happens later, in the background job."""
+    if config.dialect == DatabaseDialect.AIRTABLE:
+        import httpx
+
+        if not config.password:
+            raise HTTPException(status_code=400, detail="Airtable API key missing")
+        with httpx.Client(
+            base_url="https://api.airtable.com/v0",
+            headers={"Authorization": f"Bearer {config.password.get_secret_value()}"},
+            timeout=15.0,
+        ) as client:
+            resp = client.get(f"/meta/bases/{config.database}/tables")
+            resp.raise_for_status()
+            tables = resp.json().get("tables", [])
+        return [t.get("name", "unknown") for t in tables]
+
+    from sqlalchemy import create_engine, inspect
+
+    from core.schema.crawler import _build_connection_url
+
+    engine = create_engine(_build_connection_url(config), pool_pre_ping=True)
+    try:
+        names = inspect(engine).get_table_names()
+    finally:
+        engine.dispose()
+    if len(names) > settings.max_tables_per_crawl:
+        names = names[: settings.max_tables_per_crawl]
+    return names
+
+
+@router.post("/{project_id}/crawl", status_code=202)
 def crawl_schema(
     project_id: str,
+    background_tasks: BackgroundTasks,
     options: Optional[CrawlOptions] = None,
     db: Session = Depends(get_db),
-) -> SchemaSnapshot:
+) -> dict:
     """
-    Crawl the target database and store a new SchemaSnapshot.
-
-    mode=full  — full column profiling (null/distinct counts, sample values)
-    mode=quick — table names, column headers, and row counts only (fast)
-
-    Both modes save the snapshot. A running crawl can be stopped via
-    DELETE /projects/{project_id}/crawl which saves partial results.
+    Start a schema crawl as a background job. Returns immediately with a
+    job_id — poll GET /{project_id}/crawl/{job_id} for progress, or
+    DELETE /{project_id}/crawl/{job_id} to request cancellation.
     """
+    from core.crawl.executor import run_crawl_job
+    from core.crawl.job import CrawlJobService
+
     opts = options or CrawlOptions()
     service = ProjectMemoryService(db)
 
@@ -193,63 +229,48 @@ def crawl_schema(
     if not config_dict:
         raise bad_request("Project has no connection config")
 
-    # Translate mode → profiling flags
-    profile_columns = opts.mode == "full"
-    collect_sample_values = opts.mode == "full"
-
-    # Register a cancel event so DELETE /crawl can stop us between tables
-    cancel_event = threading.Event()
-    with _crawl_lock:
-        _crawl_cancel_events[project_id] = cancel_event
-
     config = _deserialize_connection_config(config_dict)
-    if config.dialect == DatabaseDialect.AIRTABLE:
-        from pydantic import SecretStr
-        from core.schema.airtable_crawler import AirtableCrawler
-        from models.connection import AirtableConnectionConfig
-
-        if not config.password:
-            raise HTTPException(status_code=400, detail="Airtable API key missing")
-
-        crawler = AirtableCrawler(
-            AirtableConnectionConfig(
-                name=project.name,
-                api_key=SecretStr(config.password.get_secret_value()),
-                base_id=config.database,
-            )
-        )
-    else:
-        crawler = SchemaCrawler(config)
 
     try:
-        snapshot = crawler.crawl(
-            project_id=project_id,
-            profile_columns=profile_columns,
-            collect_sample_values=collect_sample_values,
-            stop_event=cancel_event,
-        )
+        table_names = _discover_table_names(config)
+    except HTTPException:
+        raise
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Schema crawl failed: {exc}")
-    finally:
-        with _crawl_lock:
-            _crawl_cancel_events.pop(project_id, None)
-    crawler.dispose()
+        raise HTTPException(status_code=502, detail=f"Could not connect to target: {exc}")
 
-    service.save_snapshot(snapshot)
-    return snapshot
+    job_service = CrawlJobService(db)
+    job = job_service.create_job(project_id, mode=opts.mode, table_names=table_names)
+
+    background_tasks.add_task(run_crawl_job, job.id, project_id, config, opts.mode)
+
+    return {"job_id": job.id, "status": job.status, "table_count": len(table_names)}
 
 
-@router.delete("/{project_id}/crawl", status_code=204)
-def cancel_crawl(project_id: str):
+@router.get("/{project_id}/crawl/{job_id}")
+def get_crawl_job(project_id: str, job_id: str, db: Session = Depends(get_db)) -> dict:
+    from core.crawl.job import CrawlJobService
+
+    job_service = CrawlJobService(db)
+    job = job_service.get_job(job_id)
+    if not job or job.project_id != project_id:
+        raise not_found("Crawl job", job_id)
+    return job_service.progress(job_id)
+
+
+@router.delete("/{project_id}/crawl/{job_id}", status_code=204)
+def cancel_crawl(project_id: str, job_id: str, db: Session = Depends(get_db)):
     """
-    Signal a running crawl to stop. The crawl will finish its current table
-    and then save a partial snapshot. Returns 204 regardless of whether
-    a crawl was running.
+    Signal a running crawl job to stop. The job checks this flag between
+    tables and between stages, then saves whatever was completed so far.
+    Returns 204 regardless of whether the job was still running.
     """
-    with _crawl_lock:
-        event = _crawl_cancel_events.get(project_id)
-    if event:
-        event.set()
+    from core.crawl.job import CrawlJobService
+
+    job_service = CrawlJobService(db)
+    job = job_service.get_job(job_id)
+    if not job or job.project_id != project_id:
+        raise not_found("Crawl job", job_id)
+    job_service.request_cancel(job_id)
     return Response(status_code=204)
 
 

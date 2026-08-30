@@ -121,3 +121,53 @@ class DatasetPlanORM(Base):
     is_verified: Mapped[bool] = mapped_column(Boolean, default=False)
 
     project: Mapped["ProjectORM"] = relationship("ProjectORM", back_populates="dataset_plans")
+
+
+class CrawlJobORM(Base):
+    """
+    A staged, resumable schema crawl. Replaces the previous design where a
+    crawl ran synchronously inside the request handler with an in-process
+    (per-worker, non-persistent) cancel dict — see api/projects.py history.
+    Every crawl now has a durable record here, with one CrawlTaskORM per
+    table per stage so an interrupted crawl resumes instead of restarting.
+    """
+
+    __tablename__ = "crawl_jobs"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    project_id: Mapped[str] = mapped_column(String, ForeignKey("projects.id"), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
+    # pending | running | completed | cancelled | failed
+    mode: Mapped[str] = mapped_column(String(16), nullable=False, default="full")
+    # full | quick — mirrors the old CrawlOptions.mode
+    cancel_requested: Mapped[bool] = mapped_column(Boolean, default=False)
+    # DB-backed cancel flag — correct across worker processes, unlike the
+    # previous threading.Event kept in a module-level dict.
+    current_stage: Mapped[str | None] = mapped_column(String(16))
+    # catalog | cheap_stats | sampled_profiling | sample_values
+    error: Mapped[str | None] = mapped_column(Text)
+    snapshot_id: Mapped[str | None] = mapped_column(String)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+    tasks: Mapped[list["CrawlTaskORM"]] = relationship(
+        "CrawlTaskORM", back_populates="job", cascade="all, delete-orphan"
+    )
+
+
+class CrawlTaskORM(Base):
+    """One (table, stage) unit of work within a CrawlJob — the resume unit."""
+
+    __tablename__ = "crawl_tasks"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    job_id: Mapped[str] = mapped_column(String, ForeignKey("crawl_jobs.id"), nullable=False)
+    table_name: Mapped[str] = mapped_column(String, nullable=False)
+    stage: Mapped[str] = mapped_column(String(16), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
+    # pending | done | failed | skipped
+    error: Mapped[str | None] = mapped_column(Text)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    job: Mapped["CrawlJobORM"] = relationship("CrawlJobORM", back_populates="tasks")

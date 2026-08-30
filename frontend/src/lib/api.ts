@@ -1,8 +1,10 @@
 import axios from 'axios'
 import type {
-  ColumnMatch,
   ColumnProfileResult,
   ConnectionTestResult,
+  ConnectionConfig,
+  CrawlJobProgress,
+  CrawlJobStart,
   DatabaseDialect,
   DatasetPlan,
   InferredRelationship,
@@ -99,13 +101,21 @@ export const deleteProject = async (projectId: string): Promise<void> => {
 export const crawlSchema = async (
   projectId: string,
   options?: { mode?: 'full' | 'quick' }
-): Promise<SchemaSnapshot> => {
+): Promise<CrawlJobStart> => {
   const { data } = await api.post(`/projects/${projectId}/crawl`, options ?? {})
   return data
 }
 
-export const cancelCrawl = async (projectId: string): Promise<void> => {
-  await api.delete(`/projects/${projectId}/crawl`)
+export const getCrawlJob = async (
+  projectId: string,
+  jobId: string
+): Promise<CrawlJobProgress> => {
+  const { data } = await api.get(`/projects/${projectId}/crawl/${jobId}`)
+  return data
+}
+
+export const cancelCrawl = async (projectId: string, jobId: string): Promise<void> => {
+  await api.delete(`/projects/${projectId}/crawl/${jobId}`)
 }
 
 export const searchColumns = async (
@@ -214,6 +224,11 @@ export const recordBulkDecisions = async (
   const { data } = await api.post(`/projects/${projectId}/validation/decide/bulk`, {
     decisions,
   })
+  return data
+}
+
+export const getDecisions = async (projectId: string): Promise<ValidationDecision[]> => {
+  const { data } = await api.get(`/projects/${projectId}/validation/decisions`)
   return data
 }
 

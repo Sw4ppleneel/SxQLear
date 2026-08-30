@@ -1,15 +1,17 @@
-import React from 'react'
+
 import { useParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import toast from 'react-hot-toast'
 import { RefreshCw, ChevronDown, ChevronRight, Square, Zap, Search, X, AlertCircle, BarChart2 } from 'lucide-react'
-import { getLatestSnapshot, getSchemaGraph, crawlSchema, cancelCrawl, searchColumns, profileColumn } from '@/lib/api'
+import { getLatestSnapshot, getSchemaGraph, crawlSchema, getCrawlJob, cancelCrawl, searchColumns, profileColumn } from '@/lib/api'
 import { SchemaGraph } from '@/components/schema/SchemaGraph'
 import { Button } from '@/components/common/Button'
 import { useProjectStore } from '@/stores/projectStore'
 import { cn, formatRowCount } from '@/lib/utils'
-import type { TableProfile, ColumnProfile, TermSearchResult, ColumnProfileResult } from '@/types'
-import { useState, useRef } from 'react'
+import type { TableProfile, ColumnProfile, TermSearchResult, ColumnProfileResult, CrawlJobStatus } from '@/types'
+import { useState, useRef, useEffect } from 'react'
+
+const TERMINAL_JOB_STATUSES: CrawlJobStatus[] = ['completed', 'cancelled', 'failed']
 
 export function SchemaView() {
   const { projectId } = useParams<{ projectId: string }>()
@@ -29,27 +31,59 @@ export function SchemaView() {
     enabled: !!projectId && !!snapshot,
   })
 
+  // Crawls run as a background job now — the request returns a job_id
+  // immediately instead of blocking until the whole crawl finishes. This
+  // view polls job progress and refreshes the snapshot once it lands.
+  const [activeJobId, setActiveJobId] = useState<string | null>(null)
+  const [activeMode, setActiveMode] = useState<'full' | 'quick' | null>(null)
+
   const crawlMutation = useMutation({
     mutationFn: (mode: 'full' | 'quick') => crawlSchema(projectId!, { mode }),
-    onSuccess: (_data, mode) => {
-      queryClient.invalidateQueries({ queryKey: ['snapshot', projectId] })
-      queryClient.invalidateQueries({ queryKey: ['graph', projectId] })
-      toast.success(mode === 'quick' ? 'Quick scan complete' : 'Full crawl complete')
+    onSuccess: (data, mode) => {
+      setActiveJobId(data.job_id)
+      setActiveMode(mode)
     },
-    onError: () => toast.error('Crawl failed'),
+    onError: () => toast.error('Failed to start crawl'),
   })
 
+  const jobQuery = useQuery({
+    queryKey: ['crawl-job', projectId, activeJobId],
+    queryFn: () => getCrawlJob(projectId!, activeJobId!),
+    enabled: !!projectId && !!activeJobId,
+    refetchInterval: (query) => {
+      const status = query.state.data?.status
+      return status && TERMINAL_JOB_STATUSES.includes(status) ? false : 1500
+    },
+  })
+
+  useEffect(() => {
+    const status = jobQuery.data?.status
+    if (!status || !TERMINAL_JOB_STATUSES.includes(status)) return
+
+    queryClient.invalidateQueries({ queryKey: ['snapshot', projectId] })
+    queryClient.invalidateQueries({ queryKey: ['graph', projectId] })
+
+    if (status === 'completed') {
+      toast.success(activeMode === 'quick' ? 'Quick scan complete' : 'Full crawl complete')
+    } else if (status === 'cancelled') {
+      toast('Crawl stopped — partial results saved', { icon: '⏹' })
+    } else if (status === 'failed') {
+      toast.error(jobQuery.data?.error ?? 'Crawl failed')
+    }
+    setActiveJobId(null)
+    setActiveMode(null)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [jobQuery.data?.status])
+
   const cancelMutation = useMutation({
-    mutationFn: () => cancelCrawl(projectId!),
+    mutationFn: () => cancelCrawl(projectId!, activeJobId!),
     onSuccess: () => {
-      // The crawl endpoint will return once the current table finishes;
-      // the crawlMutation's onSuccess fires and refreshes the snapshot.
       toast('Stopping crawl…', { icon: '⏹' })
     },
   })
 
   const selectedTableData = snapshot?.tables.find((t) => t.name === selectedTable) ?? null
-  const isCrawling = crawlMutation.isPending
+  const isCrawling = crawlMutation.isPending || !!activeJobId
 
   // Column search state
   const [searchOpen, setSearchOpen] = useState(false)
@@ -134,8 +168,22 @@ export function SchemaView() {
       {isCrawling && (
         <div className="flex items-center gap-2 border-b border-surface-border bg-accent/5 px-6 py-2 text-xs text-accent">
           <RefreshCw className="h-3 w-3 animate-spin" />
-          Crawling schema… this may take a while for large databases.
-          Click Stop to save partial results.
+          {jobQuery.data
+            ? (() => {
+                const stage = jobQuery.data.current_stage
+                const stageProgress = stage ? jobQuery.data.stages[stage] : null
+                const stageLabel: Record<string, string> = {
+                  catalog: 'Reading schema catalog',
+                  cheap_stats: 'Estimating row counts',
+                  sampled_profiling: 'Profiling columns',
+                  sample_values: 'Profiling columns',
+                }
+                const label = stage ? stageLabel[stage] ?? stage : 'Starting'
+                return stageProgress
+                  ? `${label}… ${stageProgress.done}/${stageProgress.total} tables. Click Stop to save partial results.`
+                  : `${label}… Click Stop to save partial results.`
+              })()
+            : 'Starting crawl…'}
         </div>
       )}
 

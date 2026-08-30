@@ -76,6 +76,35 @@ export interface SchemaSnapshot {
   notes?: string
 }
 
+// ─── Crawl Jobs ───────────────────────────────────────────────────────────────
+
+export type CrawlJobStatus = 'pending' | 'running' | 'completed' | 'cancelled' | 'failed'
+export type CrawlStage = 'catalog' | 'cheap_stats' | 'sampled_profiling' | 'sample_values'
+
+export interface CrawlStageProgress {
+  done: number
+  total: number
+}
+
+export interface CrawlJobProgress {
+  job_id: string
+  status: CrawlJobStatus
+  current_stage: CrawlStage | null
+  mode: 'full' | 'quick'
+  error: string | null
+  snapshot_id: string | null
+  stages: Record<CrawlStage, CrawlStageProgress>
+  created_at: string
+  updated_at: string
+  finished_at: string | null
+}
+
+export interface CrawlJobStart {
+  job_id: string
+  status: CrawlJobStatus
+  table_count: number
+}
+
 // ─── Relationships ────────────────────────────────────────────────────────────
 
 // ─── Column Search ───────────────────────────────────────────────────────────
