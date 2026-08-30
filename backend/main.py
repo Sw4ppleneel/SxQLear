@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -17,6 +18,16 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+
+# ── Startup / shutdown ───────────────────────────────────────────────────────
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    logger.info("Initializing local memory database...")
+    init_db()
+    logger.info("SxQLear backend started on %s:%d", settings.api_host, settings.api_port)
+    yield
+
+
 # ── Application ───────────────────────────────────────────────────────────────
 app = FastAPI(
     title="SxQLear",
@@ -24,13 +35,16 @@ app = FastAPI(
     version="0.1.0",
     docs_url="/docs" if settings.debug else None,  # Disable Swagger UI in prod
     redoc_url="/redoc" if settings.debug else None,
+    lifespan=lifespan,
 )
 
 # ── CORS ──────────────────────────────────────────────────────────────────────
-# Allow only the local frontend origin. This is a local-first application.
+# Allow only the local frontend origin(s). This is a local-first application.
+# Configurable via settings.cors_origins (CORS_ORIGINS env var / .env)
+# instead of being hardcoded, since debug/echo/docs are already settings-driven.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origins=settings.cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -43,14 +57,6 @@ app.include_router(api_router)
 @app.get("/health")
 def health() -> dict:
     return {"status": "ok", "version": "0.1.0"}
-
-
-# ── Startup ───────────────────────────────────────────────────────────────────
-@app.on_event("startup")
-def on_startup() -> None:
-    logger.info("Initializing local memory database...")
-    init_db()
-    logger.info("SxQLear backend started on %s:%d", settings.api_host, settings.api_port)
 
 
 # ── Global error handler ──────────────────────────────────────────────────────

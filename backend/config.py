@@ -25,6 +25,10 @@ class Settings(BaseSettings):
     debug: bool = False
     api_port: int = 8000
     api_host: str = "127.0.0.1"  # Local-only by default
+    cors_origins: list[str] = [
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+    ]
 
     # ── Local data directory ──────────────────────────────────────────────────
     # All project data, memory, and snapshots live here.

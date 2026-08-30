@@ -47,3 +47,6 @@ Thumbs.db
 # SxQLear local data (user-specific, may contain sensitive DB metadata)
 ~/.sxqlear/
 .sxqlear/
+
+# Notebooks (standalone analysis, not part of the app)
+*.ipynb
