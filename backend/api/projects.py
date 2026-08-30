@@ -8,7 +8,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Response
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from api.errors import bad_request, not_found
+from api.errors import bad_request, no_snapshot, not_found
 from core.memory.project_memory import ProjectMemoryService
 from core.schema.crawler import SchemaCrawler
 from core.schema.graph import SchemaGraph
@@ -259,10 +259,7 @@ def get_latest_snapshot(project_id: str, db: Session = Depends(get_db)) -> Schem
     service = ProjectMemoryService(db)
     snapshot = service.get_latest_snapshot(project_id)
     if not snapshot:
-        raise HTTPException(
-            status_code=404,
-            detail="No snapshot found for this project. Run a crawl first.",
-        )
+        raise no_snapshot()
     return snapshot
 
 
@@ -276,7 +273,7 @@ def get_schema_graph(project_id: str, db: Session = Depends(get_db)) -> dict:
 
     snapshot = service.get_latest_snapshot(project_id)
     if not snapshot:
-        raise HTTPException(status_code=404, detail="No snapshot found. Run a crawl first.")
+        raise no_snapshot()
 
     relationships = service.get_inferred_relationships(project_id)
     decision_map = service.get_decision_map(project_id)
@@ -327,7 +324,7 @@ def search_columns(
     service = ProjectMemoryService(db)
     snapshot = service.get_latest_snapshot(project_id)
     if not snapshot:
-        raise HTTPException(status_code=404, detail="No snapshot found. Run a crawl first.")
+        raise no_snapshot()
 
     results: list[TermSearchResult] = []
     for term in req.terms:
@@ -364,6 +361,7 @@ def profile_column(
     """
     from sqlalchemy import create_engine, text as sa_text
     from core.schema.crawler import _build_connection_url
+    from core.schema.identifiers import quote_identifier
     from models.connection import ConnectionConfig
 
     service = ProjectMemoryService(db)
@@ -373,19 +371,29 @@ def profile_column(
     if not config_dict:
         raise HTTPException(status_code=404, detail="No connection config. Create a project first.")
 
-    config = ConnectionConfig(**config_dict)
+    config = _deserialize_connection_config(config_dict)
 
-    # Verify column exists in snapshot
+    # Verify column exists in snapshot — reject before running any query
+    # against it, rather than silently profiling an arbitrary identifier.
     snapshot = service.get_latest_snapshot(project_id)
-    col_profile = None
-    if snapshot:
-        for t in snapshot.tables:
-            if t.name.lower() == table.lower():
-                for c in t.columns:
-                    if c.name.lower() == column.lower():
-                        col_profile = c
-                        break
+    if not snapshot:
+        raise no_snapshot()
 
+    col_profile = None
+    for t in snapshot.tables:
+        if t.name.lower() == table.lower():
+            for c in t.columns:
+                if c.name.lower() == column.lower():
+                    col_profile = c
+                    break
+
+    if col_profile is None and config.dialect != DatabaseDialect.AIRTABLE:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Column '{table}.{column}' not found in the latest schema snapshot.",
+        )
+
+    engine = None
     try:
         if config.dialect == DatabaseDialect.AIRTABLE:
             from urllib.parse import quote as url_quote
@@ -537,8 +545,8 @@ def profile_column(
         url = _build_connection_url(config)
         engine = create_engine(url, pool_pre_ping=True, pool_size=1, max_overflow=0)
         with engine.connect() as conn:
-            quoted_table = f'"{table}"'
-            quoted_col = f'"{column}"'
+            quoted_table = quote_identifier(table, dialect=engine.dialect)
+            quoted_col = quote_identifier(column, dialect=engine.dialect)
 
             # Total + non-null + null counts
             counts_sql = sa_text(
@@ -735,6 +743,13 @@ def profile_column(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Query failed: {str(e)}")
+    finally:
+        # The SQL (non-Airtable) branch below creates its own short-lived
+        # engine for this one profiling query — dispose it here so every
+        # exit path (success, HTTPException, or unexpected error) releases
+        # the connection pool instead of leaking it.
+        if engine is not None:
+            engine.dispose()
 
 
 # ──────────────────────────────────────────────────────────────────────────────

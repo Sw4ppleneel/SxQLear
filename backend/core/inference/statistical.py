@@ -6,6 +6,7 @@ from typing import Optional
 import sqlalchemy as sa
 from sqlalchemy import text
 
+from core.schema.identifiers import quote_identifier
 from models.relationship import SignalEvidence, SignalType
 from models.schema import ColumnProfile, ColumnType
 
@@ -55,14 +56,20 @@ class StatisticalSignal:
         if source_col.normalized_type in skip_types or target_col.normalized_type in skip_types:
             return None
 
+        dialect = engine.dialect
+        src_col_q = quote_identifier(source_col.name, dialect=dialect)
+        src_table_q = quote_identifier(source_table, dialect=dialect)
+        tgt_col_q = quote_identifier(target_col.name, dialect=dialect)
+        tgt_table_q = quote_identifier(target_table, dialect=dialect)
+
         try:
             with engine.connect() as conn:
                 # Sample distinct values from source column
                 src_result = conn.execute(
                     text(
-                        f'SELECT DISTINCT CAST("{source_col.name}" AS VARCHAR) '
-                        f'FROM "{source_table}" '
-                        f'WHERE "{source_col.name}" IS NOT NULL '
+                        f'SELECT DISTINCT CAST({src_col_q} AS VARCHAR) '
+                        f'FROM {src_table_q} '
+                        f'WHERE {src_col_q} IS NOT NULL '
                         f'LIMIT {OVERLAP_SAMPLE_SIZE}'
                     )
                 )
@@ -74,9 +81,9 @@ class StatisticalSignal:
                 # Sample distinct values from target column
                 tgt_result = conn.execute(
                     text(
-                        f'SELECT DISTINCT CAST("{target_col.name}" AS VARCHAR) '
-                        f'FROM "{target_table}" '
-                        f'WHERE "{target_col.name}" IS NOT NULL '
+                        f'SELECT DISTINCT CAST({tgt_col_q} AS VARCHAR) '
+                        f'FROM {tgt_table_q} '
+                        f'WHERE {tgt_col_q} IS NOT NULL '
                         f'LIMIT {OVERLAP_SAMPLE_SIZE}'
                     )
                 )

@@ -9,6 +9,7 @@ import sqlalchemy as sa
 from sqlalchemy import inspect, text
 
 from config import settings
+from core.schema.identifiers import quote_identifier
 from models.connection import ConnectionConfig, ConnectionTestResult, DatabaseDialect
 from models.schema import (
     ColumnProfile,
@@ -365,6 +366,8 @@ class SchemaCrawler:
         try:
             with engine.connect() as conn:
                 dialect = self._config.dialect
+                table_q = quote_identifier(table_name, dialect=engine.dialect)
+                col_q = quote_identifier(col_name, dialect=engine.dialect)
 
                 # ── Null fraction & distinct count ────────────────────────────
                 # For PostgreSQL use pg_stats — pre-computed by ANALYZE, zero scan cost.
@@ -388,12 +391,12 @@ class SchemaCrawler:
                 elif column.normalized_type not in (ColumnType.TEXT, ColumnType.JSON, ColumnType.BYTES):
                     # Non-PG: run aggregate queries only for non-blob columns
                     res = conn.execute(
-                        text(f'SELECT COUNT(*) FROM "{table_name}" WHERE "{col_name}" IS NULL')
+                        text(f'SELECT COUNT(*) FROM {table_q} WHERE {col_q} IS NULL')
                     )
                     column.null_count = res.scalar()
 
                     res = conn.execute(
-                        text(f'SELECT COUNT(DISTINCT "{col_name}") FROM "{table_name}"')
+                        text(f'SELECT COUNT(DISTINCT {col_q}) FROM {table_q}')
                     )
                     column.distinct_count = res.scalar()
 
@@ -402,9 +405,9 @@ class SchemaCrawler:
                 if collect_sample_values and settings.enable_sample_values:
                     res = conn.execute(
                         text(
-                            f'SELECT DISTINCT CAST("{col_name}" AS VARCHAR) '
-                            f'FROM "{table_name}" '
-                            f'WHERE "{col_name}" IS NOT NULL '
+                            f'SELECT DISTINCT CAST({col_q} AS VARCHAR) '
+                            f'FROM {table_q} '
+                            f'WHERE {col_q} IS NOT NULL '
                             f'LIMIT {settings.max_sample_rows}'
                         )
                     )

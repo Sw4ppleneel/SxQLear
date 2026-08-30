@@ -3,6 +3,7 @@ from __future__ import annotations
 import textwrap
 from datetime import datetime
 
+from core.schema.identifiers import quote_identifier, quote_qualified
 from models.dataset import DatasetPlan, JoinType
 
 
@@ -32,7 +33,7 @@ class SQLGenerator:
         parts.append(self._build_select(plan))
 
         # ── FROM ──────────────────────────────────────────────────────────────
-        parts.append(f"FROM {plan.base_table}")
+        parts.append(f"FROM {quote_identifier(plan.base_table)}")
 
         # ── JOINs ─────────────────────────────────────────────────────────────
         for join in plan.joins:
@@ -88,7 +89,10 @@ class SQLGenerator:
 
         col_parts: list[str] = []
         for sel in plan.selected_columns:
-            expr = sel.transformation or f'"{sel.table}"."{sel.column}"'
+            # sel.transformation is a free-text SQL expression override (e.g.
+            # "CAST(x AS DATE)") — passed through as-is by design, it isn't
+            # an identifier. The plain-column path is quoted.
+            expr = sel.transformation or quote_qualified(sel.table, sel.column)
             if sel.alias:
                 expr = f"{expr} AS {sel.alias}"
             if sel.notes:
@@ -101,22 +105,46 @@ class SQLGenerator:
     @staticmethod
     def _build_join(join) -> str:
         join_type = join.join_type.value if isinstance(join.join_type, JoinType) else join.join_type
-        clause = (
-            f'{join_type} JOIN "{join.right_table}"\n'
-            f'  ON "{join.left_table}"."{join.left_column}" = '
-            f'"{join.right_table}"."{join.right_column}"'
+        right_table_q = quote_identifier(join.right_table)
+        on_clause = (
+            f"{quote_qualified(join.left_table, join.left_column)} = "
+            f"{quote_qualified(join.right_table, join.right_column)}"
         )
+        clause = f"{join_type} JOIN {right_table_q}\n  ON {on_clause}"
         if join.reasoning:
             clause += f"\n  -- {join.reasoning}"
         return clause
+
+    @staticmethod
+    def _sql_literal(value: object) -> str:
+        """
+        Render a filter value as a SQL literal for this human-readable,
+        standalone script (the analyst runs it themselves — SxQLear never
+        executes it). Strings use real string-literal syntax with embedded
+        single quotes doubled per the SQL standard; the previous version
+        wrapped strings in double quotes, which most engines parse as an
+        *identifier*, not a literal — every string filter failed on Postgres.
+        """
+        if isinstance(value, bool):
+            return "TRUE" if value else "FALSE"
+        if isinstance(value, (int, float)):
+            return str(value)
+        if value is None:
+            return "NULL"
+        escaped = str(value).replace("'", "''")
+        return f"'{escaped}'"
 
     @staticmethod
     def _build_where(plan: DatasetPlan) -> str:
         conditions: list[str] = []
         for i, f in enumerate(plan.filters):
             prefix = "WHERE" if i == 0 else "  AND"
-            val = f'"{f.value}"' if isinstance(f.value, str) else str(f.value)
-            conditions.append(f'{prefix} "{f.table}"."{f.column}" {f.operator} {val}')
+            col = quote_qualified(f.table, f.column)
+            if f.operator.upper() in ("IS NULL", "IS NOT NULL"):
+                conditions.append(f"{prefix} {col} {f.operator.upper()}")
+            else:
+                val = SQLGenerator._sql_literal(f.value)
+                conditions.append(f"{prefix} {col} {f.operator} {val}")
             if f.reasoning:
                 conditions[-1] += f"  -- {f.reasoning}"
         return "\n".join(conditions)

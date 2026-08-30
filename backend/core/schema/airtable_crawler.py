@@ -6,6 +6,7 @@ from typing import Optional
 
 import httpx
 
+from config import settings
 from models.connection import AirtableConnectionConfig, ConnectionTestResult
 from models.schema import ColumnProfile, ColumnType, SchemaSnapshot, TableProfile
 
@@ -80,6 +81,16 @@ class AirtableCrawler:
             tables = tables_payload.get("tables", [])
         except Exception as exc:
             raise RuntimeError(f"Failed to fetch Airtable schema: {exc}")
+
+        # Was previously uncapped, unlike SchemaCrawler — a base with hundreds
+        # of tables would crawl all of them regardless of max_tables_per_crawl.
+        if len(tables) > settings.max_tables_per_crawl:
+            logger.warning(
+                "Capping Airtable crawl at %d tables (found %d)",
+                settings.max_tables_per_crawl,
+                len(tables),
+            )
+            tables = tables[: settings.max_tables_per_crawl]
 
         table_id_to_name = {table.get("id"): table.get("name") for table in tables}
         profiles: list[TableProfile] = []
