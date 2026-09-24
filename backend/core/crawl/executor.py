@@ -23,6 +23,13 @@ from models.schema import SchemaSnapshot
 logger = logging.getLogger(__name__)
 
 
+def _index_for_search(memory_service: ProjectMemoryService, snapshot: SchemaSnapshot) -> None:
+    try:
+        memory_service.index_snapshot_for_search(snapshot)
+    except Exception:
+        logger.exception("Column search indexing failed for snapshot %s", snapshot.id)
+
+
 def run_crawl_job(job_id: str, project_id: str, config: ConnectionConfig, mode: str) -> None:
     """
     The staged crawl worker. Invoked via FastAPI BackgroundTasks (runs in a
@@ -138,6 +145,7 @@ def _run_sql_job(
         return
 
     if mode == "quick":
+        _index_for_search(memory_service, snapshot)
         job_service.mark_completed(job_id, snapshot.id)
         return
 
@@ -174,6 +182,8 @@ def _run_sql_job(
         version=snapshot.version + 1,
     )
     memory_service.save_snapshot(snapshot)
+
+    _index_for_search(memory_service, snapshot)
 
     if was_cancelled:
         job_service.mark_cancelled(job_id)
@@ -225,4 +235,5 @@ def _run_airtable_job(
             job_service.mark_task(job_id, table.name, stage, "done")
 
     memory_service.save_snapshot(snapshot_raw)
+    _index_for_search(memory_service, snapshot_raw)
     job_service.mark_completed(job_id, snapshot_raw.id)

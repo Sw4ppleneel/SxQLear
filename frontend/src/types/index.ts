@@ -120,6 +120,7 @@ export interface ColumnMatch {
 export interface TermSearchResult {
   term: string
   matches: ColumnMatch[]
+  search_mode: 'hybrid' | 'lexical'
 }
 
 // ─── Column Profile ───────────────────────────────────────────────────────────

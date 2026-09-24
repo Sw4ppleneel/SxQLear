@@ -51,6 +51,21 @@ class SchemaSnapshotORM(Base):
     project: Mapped["ProjectORM"] = relationship("ProjectORM", back_populates="snapshots")
 
 
+class ColumnSearchIndexORM(Base):
+    """Current searchable metadata for a project; raw database values are excluded."""
+
+    __tablename__ = "column_search_index"
+
+    project_id: Mapped[str] = mapped_column(String, ForeignKey("projects.id"), primary_key=True)
+    table_name: Mapped[str] = mapped_column(String, primary_key=True)
+    column_name: Mapped[str] = mapped_column(String, primary_key=True)
+    snapshot_id: Mapped[str] = mapped_column(String, nullable=False)
+    document: Mapped[str] = mapped_column(Text, nullable=False)
+    document_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    model_name: Mapped[str | None] = mapped_column(String)
+    embedding: Mapped[list | None] = mapped_column(JSON)
+
+
 class InferredRelationshipORM(Base):
     __tablename__ = "inferred_relationships"
 

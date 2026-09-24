@@ -58,11 +58,12 @@ export function Sidebar() {
     : []
 
   return (
-    <nav className="flex h-full w-52 flex-shrink-0 flex-col border-r border-surface-border bg-surface-elevated">
+    <nav className="flex h-full w-14 flex-shrink-0 flex-col border-r border-surface-border bg-surface-elevated sm:w-52">
       {/* Logo */}
-      <div className="flex h-12 items-center border-b border-surface-border px-4">
-        <span className="font-semibold tracking-tight text-text-primary">SxQLear</span>
-        <span className="ml-2 rounded bg-accent/20 px-1.5 py-0.5 text-2xs font-medium text-accent">
+      <div className="flex h-12 items-center justify-center border-b border-surface-border px-2 sm:justify-start sm:px-4">
+        <span className="font-semibold tracking-tight text-text-primary sm:hidden">S</span>
+        <span className="hidden font-semibold tracking-tight text-text-primary sm:inline">SxQLear</span>
+        <span className="ml-2 hidden rounded bg-accent/20 px-1.5 py-0.5 text-2xs font-medium text-accent sm:inline">
           alpha
         </span>
       </div>
@@ -79,7 +80,7 @@ export function Sidebar() {
         <>
           <div className="mx-4 my-3 border-t border-surface-border" />
           <div className="px-2">
-            <p className="mb-1.5 px-2 text-2xs font-medium uppercase tracking-widest text-text-muted">
+            <p className="mb-1.5 hidden px-2 text-2xs font-medium uppercase tracking-widest text-text-muted sm:block">
               Current Project
             </p>
             {projectItems.map((item) => (
@@ -97,9 +98,11 @@ function SidebarItem({ item }: { item: NavItem }) {
     <NavLink
       to={item.to}
       end={item.to === '/'}
+      title={item.label}
+      aria-label={item.label}
       className={({ isActive }) =>
         cn(
-          'mb-0.5 flex items-center gap-2.5 rounded px-2.5 py-1.5 text-sm transition-colors',
+          'mb-0.5 flex min-h-11 items-center justify-center gap-2.5 rounded px-2.5 py-1.5 text-sm transition-colors sm:justify-start',
           isActive
             ? 'bg-accent/15 text-accent'
             : 'text-text-secondary hover:bg-surface-hover hover:text-text-primary'
@@ -107,7 +110,7 @@ function SidebarItem({ item }: { item: NavItem }) {
       }
     >
       {item.icon}
-      {item.label}
+      <span className="hidden sm:inline">{item.label}</span>
     </NavLink>
   )
 }

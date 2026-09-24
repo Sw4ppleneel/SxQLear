@@ -105,6 +105,10 @@ ENABLE_LLM_INFERENCE=true
 
 The system works fully without LLM keys. LLM reasoning is a supplementary layer only.
 
+### Local semantic column search
+
+Install the optional local embedding model dependencies with `pip install -e ".[embeddings]"` from `backend/`. After a quick scan or full crawl, **Find Columns** indexes table and column metadata locally and combines semantic similarity with exact name matching. Existing snapshots are indexed when first searched; changed metadata and analyst annotations are refreshed automatically. Raw row values and sampled values are never embedded. If the optional model is unavailable, the same search uses metadata and name matching and labels the results accordingly. Set `ENABLE_VECTOR_SEARCH=false` to disable embeddings.
+
 ---
 
 ## Supported Databases

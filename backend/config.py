@@ -68,6 +68,7 @@ class Settings(BaseSettings):
     # ── Optional: Embedding-based semantic inference ──────────────────────────
     enable_semantic_inference: bool = False
     embedding_model: str = "all-MiniLM-L6-v2"  # sentence-transformers
+    enable_vector_search: bool = True  # Uses local model when embeddings extra is installed
 
 
 settings = Settings()

@@ -11,6 +11,7 @@ from api.errors import bad_request, no_snapshot, not_found
 from config import settings
 from core.memory.project_memory import ProjectMemoryService
 from core.schema.graph import SchemaGraph
+from core.schema.search_index import index_snapshot, query_vector
 from db.session import get_db
 from core.security.secrets import get_secret_box
 from models.connection import ConnectionConfig, DatabaseDialect
@@ -326,6 +327,7 @@ class ColumnMatch(BaseModel):
 class TermSearchResult(BaseModel):
     term: str
     matches: list[ColumnMatch]
+    search_mode: Literal["hybrid", "lexical"] = "lexical"
 
 
 @router.post("/{project_id}/columns/search", response_model=list[TermSearchResult])
@@ -338,19 +340,24 @@ def search_columns(
     Given a list of concept / variable names, score every column in the latest schema
     snapshot and return the best-matching columns per term.
 
-    This is purely lexical + structural — no LLM required. It works on any crawled
-    database by splitting names into tokens and matching against table name, column name,
-    raw type, and (if available) sample values.
+    Combines exact/lexical matches with local metadata embeddings when available.
+    It never sends schema or database values to an external embedding service.
     """
     service = ProjectMemoryService(db)
     snapshot = service.get_latest_snapshot(project_id)
     if not snapshot:
         raise no_snapshot()
 
+    rows = index_snapshot(db, snapshot)
+    documents = {(row.table_name, row.column_name): row.document for row in rows}
+
     results: list[TermSearchResult] = []
     for term in req.terms:
-        matches = _score_term_against_snapshot(term, snapshot, req.top_k)
-        results.append(TermSearchResult(term=term, matches=matches))
+        vector_scores = query_vector(term, rows)
+        matches = _score_term_against_snapshot(term, snapshot, req.top_k, documents, vector_scores)
+        results.append(TermSearchResult(
+            term=term, matches=matches, search_mode="hybrid" if vector_scores else "lexical"
+        ))
     return results
 
 
@@ -780,20 +787,43 @@ def profile_column(
 def _tokenize(text: str) -> set[str]:
     """Split snake_case, camelCase, spaces, and hyphens into lowercase tokens."""
     # Split on non-alphanumeric boundaries then camelCase
-    step1 = re.sub(r'[_\-\s]+', ' ', text)
+    step1 = re.sub(r'[^A-Za-z0-9]+', ' ', text)
     step2 = re.sub(r'([a-z])([A-Z])', r'\1 \2', step1)
     return {t.lower() for t in step2.split() if t}
 
 
-def _score_term_against_snapshot(term: str, snapshot, top_k: int) -> list[ColumnMatch]:
-    from models.schema import SchemaSnapshot
-    term_tokens = _tokenize(term)
+def _score_term_against_snapshot(
+    term: str, snapshot: SchemaSnapshot, top_k: int,
+    documents: dict[tuple[str, str], str] | None = None,
+    vector_scores: dict[tuple[str, str], float] | None = None,
+) -> list[ColumnMatch]:
+    term_tokens = _tokenize(term) - {"where", "what", "which", "find", "show", "me", "the", "a", "an", "is", "are", "for", "of"}
     candidates: list[tuple[float, ColumnMatch]] = []
+    documents = documents or {}
+    vector_scores = vector_scores or {}
+    strongest_semantic = max(vector_scores.values(), default=0.0)
 
     for table in snapshot.tables:
         table_tokens = _tokenize(table.name)
         for col in table.columns:
-            score, reasons = _score_column(term, term_tokens, table.name, table_tokens, col)
+            lexical, reasons = _score_column(term, term_tokens, table.name, table_tokens, col)
+            key = (table.name, col.name)
+            document = documents.get(key, "")
+            if document and term_tokens:
+                note_tokens = _tokenize(document)
+                overlap = term_tokens & note_tokens
+                if overlap:
+                    lexical += 0.25 * len(overlap) / len(term_tokens)
+                    reasons.append("matches schema description or metadata")
+            semantic = vector_scores.get(key, 0.0)
+            semantic_score = (
+                max(0.0, min(1.0, (semantic - 0.25) / (strongest_semantic - 0.25)))
+                if strongest_semantic > 0.3 else 0.0
+            )
+            lexical_score = min(1.0, lexical / 1.5)
+            score = (0.4 * lexical_score + 0.6 * semantic_score) if vector_scores else lexical_score
+            if semantic_score > 0:
+                reasons.append(f"semantic metadata match (cosine {semantic:.2f})")
             if score > 0:
                 candidates.append((score, ColumnMatch(
                     table=table.name,

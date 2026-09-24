@@ -95,6 +95,15 @@ class ProjectMemoryService:
     def get_latest_snapshot(self, project_id: str) -> SchemaSnapshot | None:
         return self._repo.get_latest_snapshot(project_id)
 
+    def index_snapshot_for_search(self, snapshot: SchemaSnapshot) -> None:
+        from core.schema.search_index import index_snapshot
+
+        try:
+            index_snapshot(self._repo.db, snapshot)
+        except Exception:
+            self._repo.db.rollback()
+            raise
+
     # ── Relationship inference results ────────────────────────────────────────
 
     def save_inferred_relationships(
